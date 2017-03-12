@@ -13,28 +13,33 @@ def transformTrainFile(content):
 	paragraphs = re.split('\n[ \n]*\n', content)
 
 	# Eliminate newline in each paragraph
-	paragraphs = [paragraph.replace('\n', '') for paragraph in paragraphs]
+	paragraphs = [re.sub('(?=\W)- *\n', '', paragraph) for paragraph in paragraphs]
+	paragraphs = [paragraph.replace('\n', ' ') for paragraph in paragraphs]
 
 	# Strip whitespace
 	paragraphs = [paragraph.strip(' ') for paragraph in paragraphs]
 	
 	# Trim the header
 	start_line = None
-	for idx, paragraph in enumerate(paragraphs):
+	for idx, paragraph in list(enumerate(paragraphs)):
 		if re.match('(^.*\*?end\*?the small print.*$)', paragraph.lower()) != None:
 			start_line = idx
+
 	if start_line == None:
 		raise Exception('Start Line Error')
 	del paragraphs[: start_line + 1]
 
 	# Trim the trailer
 	end_line = None
-	for idx, paragraph in reversed(list(enumerate(paragraphs))):
-		if re.match('(^(\*{3})?((the )?end of )?(the )?project gutenberg.*$)|(^\ *the end.*$)', paragraph.lower()) != None:
+	trailer_not_found = True
+	for idx, paragraph in reversed(list(enumerate(paragraphs))[len(paragraphs)/2:]):
+		if re.match('(^.*((the )?end of )?(the )?project gutenberg.*$)', paragraph.lower()) != None:
 			end_line = idx
-	if end_line != None:
+			trailer_not_found = False
+	if not trailer_not_found:
 		del paragraphs[end_line:]
-	
+
+
 	# Remove those paragraphs don't end with a period (or question mark, etc.)
 	paragraphs = [p for p in paragraphs if re.search('[.;!?]$', p) != None]
 
@@ -142,5 +147,6 @@ def transformTrainData():
 	with open(config.val_file, 'w') as file:
 		for sentence in valData:
 			file.write(sentence + '\n')
-		
-transformTrainData()
+	
+if __name__ == '__main__':
+	transformTrainData()
