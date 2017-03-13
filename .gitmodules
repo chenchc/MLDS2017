@@ -1,0 +1,3 @@
+[submodule "hw1/fastText"]
+	path = hw1/fastText
+	url = https://github.com/facebookresearch/fastText.git
