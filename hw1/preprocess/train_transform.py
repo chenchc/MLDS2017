@@ -48,9 +48,8 @@ def transformTrainFile(content):
 
 	# "blabla" or 'blabla' -> blabla
 	for idx, paragraph in enumerate(paragraphs):
-		if re.search('("[a-zA-Z]+")|(\'[a-z][A-Z]+\')', paragraph) != None:
-			paragraphs[idx] = re.sub('"(?P<bla>([a-zA-Z]+))"', lambda m: m.group('bla'), paragraphs[idx])
-			paragraphs[idx] = re.sub("'(?P<bla>([a-zA-Z]+))'", lambda m: m.group('bla'), paragraphs[idx])
+		paragraphs[idx] = re.sub('"(?P<bla>([a-zA-Z]+))"', lambda m: m.group('bla'), paragraphs[idx])
+		paragraphs[idx] = re.sub("'+(?P<bla>([a-zA-Z]+))'+", lambda m: m.group('bla'), paragraphs[idx])
 	
 	# Extract quotes (from " ")
 	for idx, paragraph in enumerate(paragraphs):

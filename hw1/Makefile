@@ -15,7 +15,7 @@ data/wiki.en.bin:
 	wget https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.zip -O data/wiki.en.zip
 	cd data; unzip wiki.en.zip; cd -
 
-data/word_list.txt: data/training_data.txt data/val_data.txt kaggle_data/testing_data.csv preprocess/gen_word_list.py
+data/word_list.txt: data/training_data.txt data/val_data.txt kaggle_data/testing_data.csv preprocess/gen_word_list.py preprocess/utils.py
 	$(PYTHON) preprocess/gen_word_list.py
 
 data/word_vec.txt: data/word_list.txt data/wiki.en.bin

@@ -32,6 +32,7 @@ def getTestingData():
 		for row in reader:
 			question = row['question']
 			question = question[:-1] # Remove the trailing .
+			question = question.lower()
 			data.append(question.split(' '))
 
 	return data
@@ -41,7 +42,11 @@ def getTestingChoiceList():
 	with open(config.test_file, 'rb') as file:
 		reader = csv.DictReader(file)
 		for row in reader:
-			data.append([row['a)'], row['b)'], row['c)'], row['d)'], row['e)']]) 
+			data.append(
+				map(
+				lambda string : string.lower(), 
+				[row['a)'], row['b)'], row['c)'], row['d)'], row['e)']])
+				)
 
 	return data
 
