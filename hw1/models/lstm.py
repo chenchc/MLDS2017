@@ -3,12 +3,13 @@ import tensorflow as tf
 import numpy as np
 import os
 import random
+import sys
 
 class lstm:
 
 	# Config
 	num_layers = 1
-	hidden_size = [200]
+	hidden_size = [256]
 	dropout_prob_c = 0.0
 	batch_size = 32
 	save_dir = 'data/model_lstm'
@@ -103,7 +104,7 @@ class lstm:
 		self.losses = losses = 1.0 - tf.reduce_sum(tf.multiply(y_masked_flatten_l2, y_label_masked_flatten_l2), axis=1, name='losses')
 		self.loss = loss = tf.reduce_mean(losses, name='loss')
 
-		adam = tf.train.AdamOptimizer(0.1)
+		adam = tf.train.AdamOptimizer()
 		self.train_step = train_step = adam.minimize(loss)
 
 	def genFeedDict(self, batch_start, data, batch_size=None):
@@ -133,6 +134,7 @@ class lstm:
 		return feed_dict
 
 	def getPseudoAccuracy(self, data, sess):
+		word_vec_list = self.word_vec_dict.values()
 		wrong_count = 0
 		for i in range(0, len(data) - self.batch_size, self.batch_size):
 			correct_losses = sess.run(self.losses, feed_dict=self.genFeedDict(i, data))
@@ -145,7 +147,7 @@ class lstm:
 				wrong_feed_dict[self.y_label] = np.zeros((self.batch_size, self.max_seq_len, self.word_vec_dim), dtype=np.float32)
 				for l, sentence in enumerate(data[i: i + self.batch_size]):
 					for k, word in enumerate(sentence):
-						wrong_feed_dict[self.y_label][l, k] = random.choice(self.word_vec_dict.values())
+						wrong_feed_dict[self.y_label][l, k] = random.choice(word_vec_list)
 
 				wrong_losses = sess.run(self.losses, feed_dict=wrong_feed_dict)
 				
@@ -154,13 +156,16 @@ class lstm:
 
 		return 1.0 - float(wrong_count) / len(data)
 
-	def train(self):
+	def train(self, load_savepoint=None):
 		print 'Start training...'
 
 		with tf.Session() as sess:
 			init = tf.global_variables_initializer()
 			sess.run(init)
-			for epoch in range(10):
+			if load_savepoint != None:
+				tf.train.Saver().restore(sess, load_savepoint)
+			last_val_loss = 999.9
+			for epoch in range(100):
 				print '[Epoch #' + str(epoch) + ']'
 
 				percent = 0
@@ -179,7 +184,17 @@ class lstm:
 					val_loss += sess.run(self.loss, feed_dict=feed_dict)
 					count += 1
 				print 'Validation loss:' + str(val_loss / count)
-				print 'Psuedo accuracy:' + str(self.getPseudoAccuracy(random.sample(self.val_data, self.batch_size * 4), sess))
-				tf.train.Saver().save(sess, self.save_path)
+				print 'Psuedo accuracy:' + str(self.getPseudoAccuracy(random.sample(self.val_data, len(self.val_data) / 4), sess))
 
-lstm().train()
+				if (val_loss / count) >= last_val_loss:
+					break
+
+				last_val_loss = val_loss
+				tf.train.Saver().save(sess, self.save_path)
+				random.shuffle(self.training_data)
+
+if len(sys.argv) > 1:
+	checkpoint = sys.argv[1]
+	lstm().train(checkpoint)
+else:
+	lstm().train()
