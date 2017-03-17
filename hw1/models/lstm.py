@@ -1,3 +1,4 @@
+import csv
 import preprocess.utils
 import tensorflow as tf
 import numpy as np
@@ -11,9 +12,10 @@ class lstm:
 	num_layers = 1
 	hidden_size = [256]
 	dropout_prob_c = 0.0
-	batch_size = 32
+	batch_size = 48
 	save_dir = 'data/model_lstm'
 	save_path = 'data/model_lstm/model.ckpt'
+	submit_file = 'data/submit_lstm.csv'
 
 	# Constants
 	training_data = None
@@ -48,6 +50,7 @@ class lstm:
 		self.training_data = preprocess.utils.getTrainingData()
 		self.val_data = preprocess.utils.getValData()
 		self.testing_data = preprocess.utils.getTestingData()
+		self.testing_choices = preprocess.utils.getTestingChoiceList()
 		self.word_vec_dict = preprocess.utils.getWordVecDict()
 
 		self.word_vec_dim = self.word_vec_dict.values()[0].shape[0]
@@ -105,21 +108,31 @@ class lstm:
 		self.loss = loss = tf.reduce_mean(losses, name='loss')
 
 		adam = tf.train.AdamOptimizer()
+        #global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0))
+		#self.train_step = train_step = adam.minimize(loss, global_step=global_step)
 		self.train_step = train_step = adam.minimize(loss)
 
-	def genFeedDict(self, batch_start, data, batch_size=None):
+	def genFeedDict(self, batch_start, data, batch_size=None, testing=False):
 		if batch_size == None:
 			batch_size = self.batch_size
 
 		x_data = np.zeros((batch_size, self.max_seq_len, self.word_vec_dim), dtype=np.float32)
 		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
 			for k, word in enumerate(sentence[:-1]):
-				x_data[j, k + 1] = self.word_vec_dict[word]
+				try:
+					x_data[j, k + 1] = self.word_vec_dict[word]
+				except Exception as e:
+					if not word == '_____':
+						raise e
 
 		y_label_data = np.zeros((batch_size, self.max_seq_len, self.word_vec_dim), dtype=np.float32)
 		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
 			for k, word in enumerate(sentence):
-				y_label_data[j, k] = self.word_vec_dict[word]
+				try:
+					y_label_data[j, k] = self.word_vec_dict[word]
+				except Exception as e:
+					if not word == '_____':
+						raise e
 
 		seq_len_data = np.zeros((batch_size), dtype=np.int32)
 		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
@@ -129,7 +142,7 @@ class lstm:
 			self.x: x_data, 
 			self.y_label: y_label_data, 
 			self.seq_len: seq_len_data, 
-			self.dropout_prob: self.dropout_prob_c}
+			self.dropout_prob: self.dropout_prob_c if not testing else 0.0}
 
 		return feed_dict
 
@@ -189,12 +202,43 @@ class lstm:
 				if (val_loss / count) >= last_val_loss:
 					break
 
-				last_val_loss = val_loss
+				last_val_loss = (val_loss / count)
 				tf.train.Saver().save(sess, self.save_path)
 				random.shuffle(self.training_data)
 
-if len(sys.argv) > 1:
-	checkpoint = sys.argv[1]
-	lstm().train(checkpoint)
-else:
-	lstm().train()
+	def test(self, load_savepoint=None):
+		print 'Start testing...'
+
+		with tf.Session() as sess:
+			if load_savepoint != None:
+				tf.train.Saver().restore(sess, load_savepoint)
+			else:
+				tf.train.Saver().restore(sess, self.save_path)
+
+			answers = [None] * len(self.testing_data)
+			percent = 0
+			for i in range(len(self.testing_data)):
+				blank_index = self.testing_data[i].index('_____')
+				test_feed_dict = self.genFeedDict(i, self.testing_data, batch_size=1, testing=True)
+				best_loss = 99999.9
+				best_choice = None
+				for j in range(5):
+					test_feed_dict[self.y_label][0][blank_index] = self.word_vec_dict[self.testing_choices[i][j]]
+					losses = sess.run(self.losses, feed_dict=test_feed_dict)
+					loss = losses[blank_index]
+					if loss < best_loss:
+						best_choice = j
+						best_loss = loss
+				answers[i] = best_choice
+
+				if int(i * 100 / len(self.testing_data)) > percent:
+					percent = int(i * 100 / len(self.testing_data))
+					print str(percent) + '% on testing'
+			
+			with open(self.submit_file, 'wb') as file:
+				writer = csv.DictWriter(file, ['id', 'answer'])
+				writer.writeheader()
+				for i, ans in enumerate(answers):
+					lut = ['a', 'b', 'c', 'd', 'e']
+					writer.writerow({'id': i + 1, 'answer': lut[ans]})
+
