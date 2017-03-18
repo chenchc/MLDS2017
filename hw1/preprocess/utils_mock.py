@@ -22,35 +22,16 @@ def getTrainingLikeData(filename):
 	return data
 
 def getTrainingData():
-	return getTrainingLikeData(config.train_file)
+	return [s for s in getTrainingLikeData(config.train_file) if 'sherlock' in s]
 
 def getValData():
-	return getTrainingLikeData(config.val_file)
+	return [s for s in getTrainingLikeData(config.train_file) if 'sherlock' in s]
 
 def getTestingData():
-	data = []
-	with open(config.test_file, 'rb') as file:
-		reader = csv.DictReader(file)
-		for row in reader:
-			question = row['question']
-			question = question[:-1] # Remove the trailing .
-			question = question.lower()
-			data.append(question.split(' '))
-
-	return data
+	return [['sherlock', '_____', ',', 'i', 'want', 'to', 'play', 'piano']]
 	
 def getTestingChoiceList():
-	data = []
-	with open(config.test_file, 'rb') as file:
-		reader = csv.DictReader(file)
-		for row in reader:
-			data.append(
-				map(
-				lambda string : string.lower(), 
-				[row['a)'], row['b)'], row['c)'], row['d)'], row['e)']])
-				)
-
-	return data
+	return [['want', 'i', 'holmes', 'piano', 'to']]
 
 word_vec_dict = None # Lazy initilized
 
