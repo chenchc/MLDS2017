@@ -72,6 +72,11 @@ def getWordVecDict():
 			content.remove('\n')
 			word_vec_dict[content[0]] = np.array(map(lambda string: float(string), content[1:]), dtype=np.float32)
 
+	# Special words
+	word_vec_dict['<UNK>'] = np.zeros([300], dtype=np.float32)
+	word_vec_dict['<START>'] = np.zeros([300], dtype=np.float32)
+	word_vec_dict['<END>'] = np.zeros([300], dtype=np.float32)
+
 	return word_vec_dict
 
 word_occurence = None
@@ -80,17 +85,19 @@ word_essential = None
 def getWordIndexDict(min_occurence=1):
 
 	if word_occurence == None:
-		getWordOccurence()
+		getWordOccurencePrologue()
 
 	word_list = [word for word in word_occurence if word in word_essential or word_occurence[word] >= min_occurence]
 	word_index_dict = defaultdict(int) # Unknown word to be 0
 	word_index_dict['<UNK>'] = 0
 	for i, word in enumerate(word_list):
 		word_index_dict[word] = i + 1
+	word_index_dict['<START>'] = len(word_index_dict)
+	word_index_dict['<END>'] = len(word_index_dict)
 
 	return word_index_dict
 
-def getWordOccurence():
+def getWordOccurencePrologue():
 	global word_occurence
 	global word_essential
 
@@ -115,6 +122,7 @@ def getWordOccurence():
 		for word in s:
 			if word != '_____':
 				word_occurence[word] += 1
+				word_essential.add(word)
 
 	choice = getTestingChoiceList()
 	for s in choice:
@@ -123,3 +131,24 @@ def getWordOccurence():
 			word_essential.add(word)
 	
 	return word_occurence	
+
+def getWordOccurence(min_occurence=1):
+	global word_occurence
+	global word_essential
+	
+	if word_occurence == None:
+		getWordOccurencePrologue()
+
+	word_index_dict = getWordIndexDict(min_occurence)
+
+	unk_count = 0
+	for word in word_occurence:
+		if word_occurence[word] < min_occurence and word not in word_essential:
+			unk_count += word_occurence[word]
+	
+	fixed_word_occurence = [0] * len(word_index_dict)
+	for word in word_occurence:
+		fixed_word_occurence[word_index_dict[word]] += word_occurence[word]
+
+	return fixed_word_occurence
+
