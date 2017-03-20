@@ -87,14 +87,15 @@ def getWordIndexDict(min_occurence=1):
 	if word_occurence == None:
 		getWordOccurencePrologue()
 
-	word_list = [word for word in word_occurence if word in word_essential or word_occurence[word] >= min_occurence]
+	word_list = map(lambda (key, value) : key, sorted(word_occurence.items(), key=operator.itemgetter(1), reverse=True))
+	word_list = [word for word in word_list if word in word_essential or word_occurence[word] >= min_occurence]
 	word_index_dict = defaultdict(int) # Unknown word to be 0
 	word_index_dict['<UNK>'] = 0
 	for i, word in enumerate(word_list):
 		word_index_dict[word] = i + 1
 	word_index_dict['<START>'] = len(word_index_dict)
 	word_index_dict['<END>'] = len(word_index_dict)
-
+	
 	return word_index_dict
 
 def getWordOccurencePrologue():
