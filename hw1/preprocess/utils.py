@@ -70,12 +70,12 @@ def getWordVecDict():
 		for line in file:
 			content = line.split(' ')
 			content.remove('\n')
-			word_vec_dict[content[0]] = np.array(map(lambda string: float(string), content[1:]), dtype=np.float32)
+			word_vec_dict[content[0]] = np.concatenate((np.array(map(lambda string: float(string), content[1:]), dtype=np.float32), np.zeros([50])))
 
 	# Special words
-	word_vec_dict['<UNK>'] = np.zeros([300], dtype=np.float32)
-	word_vec_dict['<START>'] = np.zeros([300], dtype=np.float32)
-	word_vec_dict['<END>'] = np.zeros([300], dtype=np.float32)
+	word_vec_dict['<UNK>'] = np.zeros([350], dtype=np.float32)
+	word_vec_dict['<START>'] = np.zeros([350], dtype=np.float32)
+	word_vec_dict['<END>'] = np.zeros([350], dtype=np.float32)
 
 	return word_vec_dict
 

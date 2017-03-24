@@ -12,12 +12,12 @@ class bilstm_hybrid:
 
 	# Config
 	num_layers = 2
-	hidden_size = [250, 250]
+	hidden_size = [350, 350]
 	dropout_prob_c = 0.0
 	batch_size = 16
-	save_dir = 'data/model_bilstm_hybrid3'
-	save_path = 'data/model_bilstm_hybrid3/model.ckpt'
-	submit_file = 'data/submit_bilstm_hybrid3.csv'
+	save_dir = 'data/model_bilstm_hybrid5'
+	save_path = 'data/model_bilstm_hybrid5/model.ckpt'
+	submit_file = 'data/submit_bilstm_hybrid5.csv'
 	nce_sample = 20 * batch_size * 20
 	lr_init = 0.001
 	lr_decay = 0.5
@@ -159,7 +159,7 @@ class bilstm_hybrid:
 		self.trainable = trainable = tf.placeholder(bool, shape=[], name='trainable')
 		
 		# Input embedding
-		
+	
 		w_emb_init = tf.constant(np.array([self.word_vec_dict[self.index_word_dict[i]] for i in range(self.total_word_count)], dtype=np.float32), dtype=tf.float32)
 		w_emb = tf.get_variable('w_emb', dtype=tf.float32, initializer=w_emb_init)
 		w_emb_fixed = tf.stop_gradient(w_emb, name='w_emb_fixed')
@@ -167,9 +167,10 @@ class bilstm_hybrid:
 		x_emb = tf.cond(trainable, 
 			lambda: tf.nn.embedding_lookup(w_emb, x, name='x_emb_flatten_trainable'),
 			lambda: tf.nn.embedding_lookup(w_emb_fixed, x, name='x_emb_flatten_untrainable'))
-		x_emb_reshape = tf.reshape(x_emb, [-1, self.word_vec_dim], name='x_emb_reshape')
+		#x_emb_reshape = tf.reshape(x_emb, [-1, self.word_vec_dim], name='x_emb_reshape')
 
 		# Highway
+		'''
 		w_highway_t= tf.get_variable('w_highway_t', [self.word_vec_dim, self.word_vec_dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
 		b_highway_t = tf.get_variable('b_highway_t', [self.word_vec_dim], dtype=tf.float32, initializer=tf.constant_initializer(-1.0))
 
@@ -188,7 +189,7 @@ class bilstm_hybrid:
 		cnn_highway_outputs_reshape = tf.reshape(cnn_highway_outputs, [-1, self.max_seq_len, sum(self.charcnn_filters.values())], name='highway_outputs_reshape')
 
 		emb_result = tf.concat([emb_highway_outputs_reshape, cnn_highway_outputs_reshape], -1, name='emb_result')
-
+		'''
 		# RNN
 		basic_cells = [None] * self.num_layers
 		for i in range(self.num_layers):
@@ -198,7 +199,7 @@ class bilstm_hybrid:
 		(stack_outputs_fw, stack_outputs_bw), stack_states = tf.nn.bidirectional_dynamic_rnn(
 			stack_cell, 
 			stack_cell,
-			inputs=emb_result, 
+			inputs=x_emb, 
 			sequence_length=seq_len + 2, # Add 1 for backward RNN
 			dtype=tf.float32) # Shape: [batch_size, max_seq_len, hidden_size[-1]]
 		
