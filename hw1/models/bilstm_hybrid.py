@@ -15,13 +15,13 @@ class bilstm_hybrid:
 	hidden_size = [250, 250]
 	dropout_prob_c = 0.0
 	batch_size = 16
-	save_dir = 'data/model_bilstm_hybrid2'
-	save_path = 'data/model_bilstm_hybrid2/model.ckpt'
-	submit_file = 'data/submit_bilstm_hybrid2.csv'
+	save_dir = 'data/model_bilstm_hybrid3'
+	save_path = 'data/model_bilstm_hybrid3/model.ckpt'
+	submit_file = 'data/submit_bilstm_hybrid3.csv'
 	nce_sample = 20 * batch_size * 20
-	lr_init = 1e-5
+	lr_init = 0.001
 	lr_decay = 0.5
-	lr_decay_patient = 5
+	lr_decay_patient = 10
 	subsample_rate = 0.0001
 	charcnn_filters = {
 		1 : 25,
@@ -38,6 +38,7 @@ class bilstm_hybrid:
 	'''
 	char_vocab_size = 1 + 26 + 1 # \0 + a-z + others
 	char_vec_dim = 15
+	init_last_loss = 999.9
 
 	# Constants
 	training_data = None
@@ -242,7 +243,7 @@ class bilstm_hybrid:
 		self.losses = losses = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=tf.one_hot(y_label_masked_flatten, self.total_word_count), name='losses')
 		#self.loss = loss = tf.reduce_mean(losses * weight_masked_flatten, name='loss')
 
-		adam = tf.train.GradientDescentOptimizer(lr)
+		adam = tf.train.AdamOptimizer(lr)
 		global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0))
 		self.train_step = train_step = adam.minimize(nce_loss, global_step=global_step)
 
@@ -319,6 +320,8 @@ class bilstm_hybrid:
 
 	def train(self, load_savepoint=None):
 		print 'Start training...'
+		STATE_LEARNING = 0
+		STATE_ADJUSTMENT = 1
 
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = True
@@ -328,20 +331,23 @@ class bilstm_hybrid:
 			sess.run(init)
 			if load_savepoint != None:
 				tf.train.Saver().restore(sess, load_savepoint)
+				state = STATE_ADJUSTMENT
+				trainable = True
+				random.shuffle(self.training_data)
+			else:
+				state = STATE_LEARNING
+				trainable = False
+				
 			last_val_loss = 999.9
 			lr = self.lr_init
+			last_loss = self.init_last_loss
+			loss_sum = 0.0
+			counter = 0
+			patient_counter = 0
 			for epoch in range(100):
 				print '[Epoch #' + str(epoch) + ']'
 
 				percent = 0
-				loss_sum = 0.0
-				counter = 0
-				patient_counter = 0
-				last_loss = 999.9
-				trainable = False
-				STATE_LEARNING = 0
-				STATE_ADJUSTMENT = 1
-				state = STATE_LEARNING
 				for i in range(0, len(self.training_data) - self.batch_size, self.batch_size):
 
 					feed_dict = self.genFeedDict(i, self.training_data, lr, trainable=trainable)
