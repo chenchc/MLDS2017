@@ -1,6 +1,6 @@
 from collections import defaultdict
 import csv
-import preprocess.utils as utils
+import preprocess.utils_mock as utils
 import tensorflow as tf
 import math
 import numpy as np
@@ -14,11 +14,12 @@ class bilstm_softmax:
 	num_layers = 1
 	hidden_size = [200]
 	dropout_prob_c = 0.0
-	batch_size = 16
-	save_dir = 'data/model_bilstm_softmax3'
-	save_path = 'data/model_bilstm_softmax3/model.ckpt'
-	submit_file = 'data/submit_bilstm_softmax3.csv'
-	nce_sample = 6000
+	batch_size = 1
+	save_dir = 'data/model_bilstm_softmax6'
+	save_path = 'data/model_bilstm_softmax6/model.ckpt'
+	submit_file = 'data/submit_bilstm_softmax6.csv'
+	#nce_sample = 20 * batch_size * 20
+	nce_sample = 20
 	lr_init = 0.001
 	lr_decay = 0.97
 	subsample_rate = 0.0001
@@ -96,32 +97,27 @@ class bilstm_softmax:
 		self.trainable = trainable = tf.placeholder(bool, shape=[], name='trainable')
 		
 		# Input embedding
-		x_onehot = tf.one_hot(x, self.total_word_count, dtype=tf.float32)
-		x_onehot_flatten = tf.reshape(x_onehot, [-1, self.total_word_count])
-
+		
 		w_emb_init = tf.constant(np.array([self.word_vec_dict[self.index_word_dict[i]] for i in range(self.total_word_count)], dtype=np.float32), dtype=tf.float32)
 		w_emb = tf.get_variable('w_emb', dtype=tf.float32, initializer=w_emb_init)
 		w_emb_fixed = tf.stop_gradient(w_emb, name='w_emb_fixed')
 
-		x_emb_flatten = tf.cond(trainable, 
-			lambda: tf.matmul(x_onehot_flatten, w_emb, name='x_emb_flatten_trainable'),
-			lambda: tf.matmul(x_onehot_flatten, w_emb_fixed, name='x_emb_flatten_untrainable'))
-		#x_emb_flatten = tf.matmul(x_onehot_flatten, w_emb, name='x_emb_flatten_trainable')
-		x_emb = tf.reshape(x_emb_flatten, [-1, self.max_seq_len, self.word_vec_dim])
+		x_emb = tf.cond(trainable, 
+			lambda: tf.nn.embedding_lookup(w_emb, x, name='x_emb_flatten_trainable'),
+			lambda: tf.nn.embedding_lookup(w_emb_fixed, x, name='x_emb_flatten_untrainable'))
 
 		# RNN
-		with tf.device('/cpu:0'):
-			basic_cells = [None] * self.num_layers
-			for i in range(self.num_layers):
-				basic_cells_lstm = tf.contrib.rnn.BasicLSTMCell(self.hidden_size[i])
-				basic_cells[i] = tf.contrib.rnn.DropoutWrapper(basic_cells_lstm, output_keep_prob=(1.0 - dropout_prob))
-			stack_cell = tf.contrib.rnn.MultiRNNCell(basic_cells)
-			(stack_outputs_fw, stack_outputs_bw), stack_states = tf.nn.bidirectional_dynamic_rnn(
-				stack_cell, 
-				stack_cell,
-				inputs=x_emb, 
-				sequence_length=seq_len + 2, # Add 1 for backward RNN
-				dtype=tf.float32) # Shape: [batch_size, max_seq_len, hidden_size[-1]]
+		basic_cells = [None] * self.num_layers
+		for i in range(self.num_layers):
+			basic_cells_lstm = tf.contrib.rnn.BasicLSTMCell(self.hidden_size[i])
+			basic_cells[i] = tf.contrib.rnn.DropoutWrapper(basic_cells_lstm, output_keep_prob=(1.0 - dropout_prob))
+		stack_cell = tf.contrib.rnn.MultiRNNCell(basic_cells)
+		(stack_outputs_fw, stack_outputs_bw), stack_states = tf.nn.bidirectional_dynamic_rnn(
+			stack_cell, 
+			stack_cell,
+			inputs=x_emb, 
+			sequence_length=seq_len + 2, # Add 1 for backward RNN
+			dtype=tf.float32) # Shape: [batch_size, max_seq_len, hidden_size[-1]]
 		
 		# Output
 		stack_outputs_bw_shift = tf.slice(stack_outputs_bw, [0, 2, 0], [-1, -1, -1])
@@ -150,7 +146,7 @@ class bilstm_softmax:
 		w_nce = tf.get_variable('w_nce', shape=[self.total_word_count, 2 * self.hidden_size[-1]], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
 		b_nce = tf.get_variable('b_nce', shape=[self.total_word_count], dtype=tf.float32, initializer=tf.constant_initializer(0))
 
-		nce_losses = tf.nn.sampled_softmax_loss(w_nce, b_nce, y_label_masked_flatten_nce, y_masked_flatten, self.nce_sample, self.total_word_count)
+		nce_losses = tf.nn.nce_loss(w_nce, b_nce, y_label_masked_flatten_nce, y_masked_flatten, self.nce_sample, self.total_word_count)
 		nce_loss = tf.reduce_mean(nce_losses * weight_masked_flatten, name='nce_loss')
 
 		logits = tf.matmul(y_masked_flatten, w_nce, transpose_b=True) + b_nce
@@ -162,28 +158,28 @@ class bilstm_softmax:
 		global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0))
 		self.train_step = train_step = adam.minimize(nce_loss, global_step=global_step)
 
-	def genFeedDict(self, batch_start, data, lr=None, batch_size=None, testing=False, trainable=True):
-		if batch_size == None:
-			batch_size = self.batch_size
+	def genFeedDict(self, batch_start, data, lr=None, actual_batch_size=None, testing=False, trainable=True):
+		if actual_batch_size == None:
+			actual_batch_size = self.batch_size
 
-		x_data = np.zeros((batch_size, self.max_seq_len), dtype=np.int32)
-		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
+		x_data = np.zeros((self.batch_size, self.max_seq_len), dtype=np.int32)
+		for j, sentence in enumerate(data[batch_start: batch_start + actual_batch_size]):
 			x_data[j, 0] = self.word_index_dict['<START>']
 			for k, word in enumerate(sentence):
 				x_data[j, k + 1] = self.word_index_dict[word]
 			x_data[j, len(sentence) + 1] = self.word_index_dict['<END>']
 
-		y_label_data = np.zeros((batch_size, self.max_seq_len), dtype=np.int64)
-		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
+		y_label_data = np.zeros((self.batch_size, self.max_seq_len), dtype=np.int64)
+		for j, sentence in enumerate(data[batch_start: batch_start + actual_batch_size]):
 			for k, word in enumerate(sentence):
 				y_label_data[j, k] = self.word_index_dict[word]
 
-		seq_len_data = np.zeros((batch_size), dtype=np.int32)
-		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
+		seq_len_data = np.zeros((self.batch_size), dtype=np.int32)
+		for j, sentence in enumerate(data[batch_start: batch_start + actual_batch_size]):
 			seq_len_data[j] = len(sentence)
 
-		weight_data = np.zeros((batch_size, self.max_seq_len), dtype=np.float32)
-		for j, sentence in enumerate(data[batch_start: batch_start + batch_size]):
+		weight_data = np.zeros((self.batch_size, self.max_seq_len), dtype=np.float32)
+		for j, sentence in enumerate(data[batch_start: batch_start + actual_batch_size]):
 			for k, word in enumerate(sentence):
 				freq = self.word_frequency[self.word_index_dict[word]]
 				weight_data[j, k] = (math.sqrt(freq / self.subsample_rate) + 1) * self.subsample_rate / freq
@@ -240,9 +236,7 @@ class bilstm_softmax:
 
 				percent = 0
 				for i in range(0, len(self.training_data) - self.batch_size, self.batch_size):
-					if (epoch == 0 and i == 0):
-						i = 1 * len(self.training_data) / 10
-						
+
 					feed_dict = self.genFeedDict(i, self.training_data, lr, trainable=(epoch > 0 or percent > 10))
 					sess.run(self.train_step, feed_dict=feed_dict)
 
@@ -289,7 +283,7 @@ class bilstm_softmax:
 			percent = 0
 			for i in range(len(self.testing_data)):
 				blank_index = self.testing_data[i].index('_____')
-				test_feed_dict = self.genFeedDict(i, self.testing_data, batch_size=1, testing=True)
+				test_feed_dict = self.genFeedDict(i, self.testing_data, actual_batch_size=1, testing=True)
 				softmax = sess.run(self.softmax, feed_dict=test_feed_dict)[blank_index]
 				'''
 				inv = dict((v, k) for k, v in self.word_index_dict.iteritems())

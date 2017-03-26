@@ -12,13 +12,13 @@ class bilstm_hybrid:
 
 	# Config
 	num_layers = 2
-	hidden_size = [350, 350]
+	hidden_size = [200, 200]
 	dropout_prob_c = 0.0
-	batch_size = 16
-	save_dir = 'data/model_bilstm_hybrid5'
-	save_path = 'data/model_bilstm_hybrid5/model.ckpt'
-	submit_file = 'data/submit_bilstm_hybrid5.csv'
-	nce_sample = 20 * batch_size * 20
+	batch_size = 20
+	save_dir = 'data/model_bilstm_hybrid6'
+	save_path = 'data/model_bilstm_hybrid6/model.ckpt'
+	submit_file = 'data/submit_bilstm_hybrid6.csv'
+	nce_sample = 10 * batch_size * 20
 	lr_init = 0.001
 	lr_decay = 0.5
 	lr_decay_patient = 10
@@ -39,6 +39,7 @@ class bilstm_hybrid:
 	char_vocab_size = 1 + 26 + 1 # \0 + a-z + others
 	char_vec_dim = 15
 	init_last_loss = 999.9
+	mul_size = 32
 
 	# Constants
 	training_data = None
@@ -208,15 +209,33 @@ class bilstm_hybrid:
 		stack_outputs_bw_shift = tf.pad(stack_outputs_bw_shift, [[0, 0], [0, 2], [0, 0]])
 			
 		mask = tf.sequence_mask(seq_len, maxlen=self.max_seq_len) # sequence length mask
-		mask = tf.logical_and(mask, tf.not_equal(y_label, 0)) # unknown word mask
+		#mask = tf.logical_and(mask, tf.not_equal(y_label, 0)) # unknown word mask
 		self.mask = mask
 		mask_flatten = tf.reshape(mask, [-1])
 
+		stack_outputs_fw_masked = tf.boolean_mask(
+			tf.reshape(stack_outputs_fw, [-1, self.hidden_size[-1]]), 
+			mask_flatten)
+		stack_outputs_bw_masked = tf.boolean_mask(
+			tf.reshape(stack_outputs_bw_shift, [-1, self.hidden_size[-1]]), 
+			mask_flatten)
+		'''
 		stack_outputs = tf.concat([stack_outputs_fw, stack_outputs_bw_shift], axis=2, name='stack_outputs')
 		stack_outputs_flatten = tf.reshape(stack_outputs, [-1, 2 * self.hidden_size[-1]])
 		stack_outputs_masked_flatten = tf.boolean_mask(stack_outputs_flatten, mask_flatten)
+		'''
+		w_mul_list = [None] * self.mul_size
+		mul_fw_bw_list = [None] * self.mul_size
+		for i in range(self.mul_size):
+			w_mul_list[i] = tf.get_variable('w_mul_' + str(i), shape=[self.hidden_size[-1], self.hidden_size[-1]], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
+			mul_fw_bw_list[i] = tf.matmul(stack_outputs_fw_masked, w_mul_list[i])
+			mul_fw_bw_list[i] *= stack_outputs_bw_masked
+			mul_fw_bw_list[i] = tf.reduce_sum(mul_fw_bw_list[i], axis=-1)
+			mul_fw_bw_list[i] = tf.reshape(mul_fw_bw_list[i], [-1, 1])
+		
+		stack_outputs_masked_flatten = tf.concat([stack_outputs_fw_masked, stack_outputs_bw_masked] + mul_fw_bw_list, axis=-1, name='stack_outputs_masked_flatten')
 
-		w_fc = tf.get_variable('w_fc', shape=[2 * self.hidden_size[-1], self.word_vec_dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
+		w_fc = tf.get_variable('w_fc', shape=[2 * self.hidden_size[-1] + self.mul_size, self.word_vec_dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
 		b_fc = tf.get_variable('b_fc', shape=[self.word_vec_dim], dtype=tf.float32, initializer=tf.constant_initializer(0))
 
 		y_masked_flatten = tf.matmul(stack_outputs_masked_flatten, w_fc) + b_fc
@@ -358,6 +377,8 @@ class bilstm_hybrid:
 
 					if int(i * 100 / len(self.training_data)) > percent:
 						percent = int(i * 100 / len(self.training_data))
+						if percent >= 10:
+							trainable = True
 						#lr *= self.lr_decay
 						#print str(percent) + '%, Training loss:' + str(sess.run(self.loss, feed_dict=feed_dict))
 						if state == STATE_LEARNING:

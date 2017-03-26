@@ -11,16 +11,17 @@ import sys
 class bilstm_tie:
 
 	# Config
-	num_layers = 1
-	hidden_size = [200]
+	num_layers = 2
+	hidden_size = [250, 250]
 	dropout_prob_c = 0.0
-	batch_size = 16
-	save_dir = 'data/model_bilstm_tie2'
-	save_path = 'data/model_bilstm_tie2/model.ckpt'
-	submit_file = 'data/submit_bilstm_tie2.csv'
+	batch_size = 20
+	save_dir = 'data/model_bilstm_tie5'
+	save_path = 'data/model_bilstm_tie5/model.ckpt'
+	submit_file = 'data/submit_bilstm_tie5.csv'
 	nce_sample = 20 * batch_size * 20
 	lr_init = 0.001
-	lr_decay = 0.97
+	lr_decay = 0.7
+	lr_decay_patient = 7
 	subsample_rate = 0.0001
 
 	# Constants
@@ -104,6 +105,21 @@ class bilstm_tie:
 		x_emb = tf.cond(trainable, 
 			lambda: tf.nn.embedding_lookup(w_emb, x, name='x_emb_flatten_trainable'),
 			lambda: tf.nn.embedding_lookup(w_emb_fixed, x, name='x_emb_flatten_untrainable'))
+		x_emb_reshape = tf.reshape(x_emb, [-1, self.word_vec_dim], name='x_emb_reshape')
+
+		# Highway
+		w_highway_t= tf.get_variable('w_highway_t', [self.word_vec_dim, self.word_vec_dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
+		b_highway_t = tf.get_variable('b_highway_t', [self.word_vec_dim], dtype=tf.float32, initializer=tf.constant_initializer(-1.0))
+
+		w_highway = tf.get_variable('w_highway', [self.word_vec_dim, self.word_vec_dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
+		b_highway = tf.get_variable('b_highway', [self.word_vec_dim], dtype=tf.float32, initializer=tf.constant_initializer(0.0))
+
+		t_highway = tf.sigmoid(tf.matmul(x_emb_reshape, w_highway_t) + b_highway_t, name='transform_gate_highway')
+		h_highway = tf.nn.relu(tf.matmul(x_emb_reshape, w_highway) + b_highway, name='activation_highway')
+		c_highway = tf.subtract(1.0, t_highway, name='carry_gate_highway')
+
+		highway_outputs = tf.add(h_highway * t_highway, x_emb_reshape * c_highway, name='highway_outputs')
+		highway_outputs_reshape = tf.reshape(highway_outputs, [-1, self.max_seq_len, self.word_vec_dim], name='highway_outputs_reshape')
 
 		# RNN
 		basic_cells = [None] * self.num_layers
@@ -114,7 +130,7 @@ class bilstm_tie:
 		(stack_outputs_fw, stack_outputs_bw), stack_states = tf.nn.bidirectional_dynamic_rnn(
 			stack_cell, 
 			stack_cell,
-			inputs=x_emb, 
+			inputs=highway_outputs_reshape, 
 			sequence_length=seq_len + 2, # Add 1 for backward RNN
 			dtype=tf.float32) # Shape: [batch_size, max_seq_len, hidden_size[-1]]
 		
@@ -151,12 +167,12 @@ class bilstm_tie:
 		nce_losses = tf.cond(trainable, 
 			lambda: tf.nn.sampled_softmax_loss(w_emb, b_nce, y_label_masked_flatten_nce, y_masked_flatten, self.nce_sample, self.total_word_count),
 			lambda: tf.nn.sampled_softmax_loss(w_emb_fixed, b_nce, y_label_masked_flatten_nce, y_masked_flatten, self.nce_sample, self.total_word_count))
-		nce_loss = tf.reduce_mean(nce_losses * weight_masked_flatten, name='nce_loss')
+		self.loss = nce_loss = tf.reduce_mean(nce_losses * weight_masked_flatten, name='nce_loss')
 
 		logits = tf.matmul(y_masked_flatten, w_emb, transpose_b=True) + b_nce
 		self.softmax = softmax = tf.nn.softmax(logits, name='softmax')
 		self.losses = losses = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=tf.one_hot(y_label_masked_flatten, self.total_word_count), name='losses')
-		self.loss = loss = tf.reduce_mean(losses * weight_masked_flatten, name='loss')
+		#self.loss = loss = tf.reduce_mean(losses * weight_masked_flatten, name='loss')
 
 		adam = tf.train.AdamOptimizer(lr)
 		global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0))
@@ -229,6 +245,7 @@ class bilstm_tie:
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth=False
 		with tf.Session(config=config) as sess:
+			writer = tf.summary.FileWriter('logs/', sess.graph)
 			init = tf.global_variables_initializer()
 			sess.run(init)
 			if load_savepoint != None:
@@ -239,19 +256,50 @@ class bilstm_tie:
 				print '[Epoch #' + str(epoch) + ']'
 
 				percent = 0
+				loss_sum = 0.0
+				counter = 0
+				patient_counter = 0
+				last_loss = 999.9
+				trainable = False
+				STATE_LEARNING = 0
+				STATE_ADJUSTMENT = 1
+				state = STATE_LEARNING
 				for i in range(0, len(self.training_data) - self.batch_size, self.batch_size):
 
-					feed_dict = self.genFeedDict(i, self.training_data, lr, trainable=(epoch > 0 or percent > 10))
-					sess.run(self.train_step, feed_dict=feed_dict)
+					feed_dict = self.genFeedDict(i, self.training_data, lr, trainable=trainable)
+					_, loss = sess.run([self.train_step, self.loss], feed_dict=feed_dict)
+					loss_sum += loss
+					counter += 1
 
 					if int(i * 100 / len(self.training_data)) > percent:
 						percent = int(i * 100 / len(self.training_data))
-						lr *= self.lr_decay
-						print str(percent) + '%, Training loss:' + str(sess.run(self.loss, feed_dict=feed_dict))
-						print 'Psuedo accuracy:' + str(self.getPseudoAccuracy(random.sample(self.val_data, self.batch_size + 1), sess))
+						#lr *= self.lr_decay
+						#print str(percent) + '%, Training loss:' + str(sess.run(self.loss, feed_dict=feed_dict))
+						if state == STATE_LEARNING:
+							if loss_sum / counter > last_loss:
+								patient_counter += 1
+								if patient_counter > self.lr_decay_patient:
+									trainable = True
+									patient_counter = 0
+									lr *= self.lr_decay
+									print 'LR changes to ' + str(lr)
+									state = STATE_ADJUSTMENT
+							else:
+								patient_counter = 0
+								last_loss = loss_sum / counter
+						else:
+							if loss_sum / counter < last_loss:
+								state = STATE_LEARNING
+								last_loss = loss_sum / counter
+								patient_counter = 0
+							
+						print str(percent) + '%, Training loss:' + str(loss_sum / counter)
+						print 'Psuedo accuracy:' + str(self.getPseudoAccuracy(random.sample(self.val_data, 5 * self.batch_size + 1), sess))
 						if percent % 10 == 0:
 							tf.train.Saver().save(sess, self.save_path)
 							print 'Saved!'
+						loss_sum = 0.0
+						counter = 0
 							
 
 				val_loss = 0.0
