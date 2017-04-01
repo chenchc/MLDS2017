@@ -23,8 +23,8 @@ data/word_list.txt: data/training_data.txt data/val_data.txt kaggle_data/testing
 data/word_vec.txt: data/word_list.txt data/wiki.en.bin
 	git submodule init
 	git submodule update
-	cd fastText; make; cd -
-	fastText/fasttext print-vectors data/wiki.en.bin < $< > $@
+	cd ../fastText; make; cd -
+	../fastText/fasttext print-vectors data/wiki.en.bin < $< > $@
 
 .PHONY=clean
 clean:
