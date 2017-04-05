@@ -9,3 +9,6 @@ test_id_path = cwd + '/MLDS_hw2_data/testing_id.txt'
 test_public_label_path = cwd + '/MLDS_hw2_data/testing_public_label.json'
 
 word_list_path = cwd + '/data/word_list.txt'
+word_vec_path = cwd + '/data/word_vec.txt'
+
+word_vec_cached_path = cwd + '/data/word_vec.p'
