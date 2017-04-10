@@ -8,10 +8,16 @@ from collections import defaultdict
 
 class ReadUtil:
 
+	MARKER_PAD = '<pad>'
+	MARKER_BOS = '<s>'
+	MARKER_EOS = '</s>'
+	marker_list = [MARKER_PAD, MARKER_BOS, MARKER_EOS]
+
 	train_caption_list = None
 	train_feat_list = None
 	test_feat_list = None
 	val_caption_list = None
+	val_caption_str_list = None
 	val_feat_list = None
 	word_freq_dict = None
 	word_list = None
@@ -70,14 +76,17 @@ class ReadUtil:
 
 		## Generate caption list
 		self.val_caption_list = []
+		self.val_caption_str_list = []
 		for video in val_label:
 			caption_list = video['caption']
 			self.val_caption_list.append([])
+			self.val_caption_str_list.append([])
 			for caption in caption_list:
 				if not all(ord(c) < 128 for c in caption):
 					continue
 				token_list = self.captionToTokenList(caption)
 				self.val_caption_list[-1].append(token_list)
+				self.val_caption_str_list[-1].append(caption)
 
 		## Generate feature list
 		self.val_feat_list = []
@@ -106,10 +115,19 @@ class ReadUtil:
 		# Tokenize
 		token_list = re.split('\s+', caption)
 
+		# Add EOS
+		token_list.append(ReadUtil.MARKER_EOS)
+
 		return token_list
 
 	@staticmethod
 	def tokenListToCaption(token_list):
+		# Trim words after EOS
+		if ReadUtil.MARKER_EOS in token_list:
+			token_list = token_list[:token_list.index(ReadUtil.MARKER_EOS)]
+		if token_list == []:
+			return ''
+
 		# Convert back to sentence
 		caption = reduce(lambda s, term: s + ' ' + term, token_list[1:], token_list[0])
 		
@@ -136,15 +154,11 @@ class ReadUtil:
 			self.word_freq_dict[word] /= total_word_count
 
 		word_freq_list = sorted(self.word_freq_dict.iteritems(), key=lambda (k, v): v, reverse=True)
-		self.word_list = [k for (k, v) in word_freq_list]
+		self.word_list = self.marker_list + [k for (k, v) in word_freq_list]
 		self.word_index_dict = dict([(self.word_list[i], i) for i in range(len(self.word_list))])
 
 	def __genWordVecDict(self):
 		if not os.path.isfile(config.word_vec_path):
-			return
-		if os.path.isfile(config.word_vec_cached_path):
-			with open(config.word_vec_cached_path, 'rb') as file:
-				self.word_vec_dict = pickle.load(file)
 			return
 
 		self.word_vec_dict = dict()
@@ -153,12 +167,8 @@ class ReadUtil:
 				content = line.split()
 				vec = [float(elem) for elem in content[1:]]
 				self.word_vec_dict[content[0]] = np.array(vec, dtype=np.float32)
-
-		with open(config.word_vec_cached_path, 'wb') as file:
-			pickle.dump(self.word_vec_dict, file)
-
-	def getWordList(self):
-		return self.word_list
+		for marker in self.marker_list:
+			self.word_vec_dict[marker] = np.zeros([300], dtype=np.float32)
 
 if __name__ == '__main__':
 	util = ReadUtil()
