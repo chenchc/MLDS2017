@@ -16,6 +16,7 @@ class ReadUtil:
 	train_caption_list = None
 	train_feat_list = None
 	test_feat_list = None
+	test_limited_feat_list = None
 	val_caption_list = None
 	val_caption_str_list = None
 	val_feat_list = None
@@ -28,6 +29,7 @@ class ReadUtil:
 		print 'Initializing ReadUtil...'
 		self.__readTrain()
 		self.__readTest()
+		self.__readTestLimited()
 		self.__readVal()
 		self.__genWordList()
 		self.__genWordVecDict()
@@ -67,6 +69,18 @@ class ReadUtil:
 		for video_id in test_id_list:
 			feat = np.load(config.test_feat_folder_path + video_id + '.npy')
 			self.test_feat_list.append(feat)
+	
+	def __readTestLimited(self):
+		## Read test id
+		with open(config.test_limited_id_path, 'r') as file:
+			content = file.read()
+		test_limited_id_list = content.split()
+
+		## Generate feature list
+		self.test_limited_feat_list = []
+		for video_id in test_limited_id_list:
+			feat = np.load(config.test_limited_feat_folder_path + video_id + '.npy')
+			self.test_limited_feat_list.append(feat)
 	
 	def __readVal(self):
 		## Read val label

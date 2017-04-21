@@ -1,4 +1,5 @@
 import bleu_eval
+import math
 import numpy as np
 import os
 import random
@@ -14,17 +15,18 @@ class ModelS2VT:
 	batch_size = 80
 	lstm1_drop_prob = 0.5
 	lstm2_drop_prob = 0.5
+	subsample_rate = 0.00001
 
 	model_name = 's2vt'
 	save_dir = 'data/model_' + model_name
 	save_path = save_dir + '/model.ckpt'
 	submit_path = 'data/submit_' + model_name
 	lr_init = 0.0001
-	lr_decay_steps = 20000
+	lr_decay_steps = 500
 	lr_decay_rate = 0.5
 	lr_momentum = 0.9
-	schd_sampling_decay = 0.0005
-	patience = 3
+	schd_sampling_decay = 0.0
+	patience = 10
 
 	## Constants
 	data = None
@@ -40,6 +42,7 @@ class ModelS2VT:
 	ref_caption_len = None
 	ref_caption = None
 	training = None
+	weight = None
 
 	## Output tensors
 	loss = None
@@ -73,6 +76,7 @@ class ModelS2VT:
 		self.ref_caption_len = ref_caption_len = tf.placeholder(tf.int32, shape=[self.batch_size], name='ref_caption_len')
 		self.ref_caption = ref_caption = tf.placeholder(tf.int32, shape=[self.batch_size, self.max_caption_len], name='ref_caption')
 		self.training = training = tf.placeholder(tf.bool, shape=[], name='training')
+		self.weight = weight = tf.placeholder(tf.float32, shape=[self.batch_size, self.max_caption_len], name='weight')
 
 		## Frame embedding
 		frames_2 = tf.reshape(frames, [-1, self.frame_vec_dim], name='frames_2')
@@ -110,6 +114,7 @@ class ModelS2VT:
 			all_finished = tf.reduce_all(elements_finished)
 
 			## Softmax Logits (dummy)
+			caption = tf.zeros([self.batch_size], dtype=tf.int32)
 			if cell_output != None:
 				cell_output_masked = tf.where(
 					elements_finished,
@@ -117,7 +122,9 @@ class ModelS2VT:
 					cell_output)
 
 				logits = tf.add(tf.matmul(cell_output_masked, w_logits), b_logits)
-				caption = tf.cast(tf.argmax(logits, axis=1), tf.int32)
+				caption_candidate = tf.transpose(tf.nn.top_k(logits, k=2)[1], [1, 0])
+				caption = tf.where(tf.equal(caption_candidate[0], loop_state), caption_candidate[1], caption_candidate[0])
+
 			# emit_output
 			emit_output = cell_output
 
@@ -147,7 +154,7 @@ class ModelS2VT:
 				next_cell_state = cell_state
 
 			# next_loop_state
-			next_loop_state = None
+			next_loop_state = caption
 
 			return (elements_finished, next_input, next_cell_state, emit_output, next_loop_state)
 
@@ -163,15 +170,26 @@ class ModelS2VT:
 		## Softmax Logits
 		logits_flat = tf.add(tf.matmul(lstm2_output_flat, w_logits), b_logits)
 		logits = tf.reshape(logits_flat, [self.batch_size, self.max_caption_len, self.total_word_count], name='logits')
-		self.caption = caption = tf.argmax(logits, axis=2, name='caption')
+		caption_candidate = tf.transpose(tf.nn.top_k(logits, k=2)[1], [2, 1, 0])
+		caption_list = []
+		for time in range(self.max_caption_len):
+			if time == 0:
+				caption_list.append(caption_candidate[0][0])
+			else:
+				caption_list.append(tf.where(tf.equal(caption_candidate[0][time], caption_list[-1]),
+					caption_candidate[1][time],
+					caption_candidate[0][time]))
+		self.caption = caption = tf.transpose(tf.stack(caption_list), [1, 0])
+		#self.caption = caption = tf.argmax(logits, axis=2, name='caption')
 
 		## Loss
 		mask = tf.sequence_mask(ref_caption_len, maxlen=self.max_caption_len, name='mask')
 		logits_mask = tf.boolean_mask(logits, mask, name='logits_mask')
 		ref_caption_mask = tf.boolean_mask(ref_caption, mask, name='ref_caption_mask')
+		weight_mask = tf.boolean_mask(weight, mask, name='weight_mask')
 		losses = tf.nn.softmax_cross_entropy_with_logits(
 			labels=tf.one_hot(ref_caption_mask, self.total_word_count, dtype=tf.float32),
-			logits=logits_mask, name='losses')
+			logits=logits_mask, name='losses') * weight_mask
 
 		loss = tf.reduce_sum(losses, name='loss')
 		self.mean_loss = mean_loss = tf.reduce_mean(losses, name='mean_loss')
@@ -196,6 +214,9 @@ class ModelS2VT:
 		frames_data = np.zeros(shape=(self.batch_size, self.max_video_len, self.frame_vec_dim), dtype=float)
 		ref_caption_len_data = np.zeros(shape=(self.batch_size), dtype=int)
 		ref_caption_data = np.zeros(shape=(self.batch_size, self.max_caption_len), dtype=int)
+		#ref_caption_len_data = np.full((self.batch_size), self.max_caption_len, dtype=int)
+		#ref_caption_data = np.full((self.batch_size, self.max_caption_len), self.data.word_index_dict[self.data.MARKER_EOS], dtype=int)
+		weight_data = np.zeros(shape=(self.batch_size, self.max_caption_len), dtype=float)
 
 		for j in range(self.batch_size):
 			frames_data[j] = pair_list[index + j][0]
@@ -203,12 +224,15 @@ class ModelS2VT:
 			
 			for k, word in enumerate(pair_list[index + j][1]):
 				ref_caption_data[j, k] = self.data.word_index_dict[word]
+				#weight_data[j, k] = (math.sqrt(self.data.word_freq_dict[word] / self.subsample_rate) + 1) * self.subsample_rate / self.data.word_freq_dict[word]
+				weight_data[j, k] = math.pow(self.data.word_freq_dict[word], -0.1)
 
 		feed_dict = {
 			self.frames: frames_data,
 			self.ref_caption_len: ref_caption_len_data,
 			self.ref_caption: ref_caption_data,
-			self.training: True
+			self.training: True,
+			self.weight: weight_data
 			}
 
 		return feed_dict
@@ -230,6 +254,7 @@ class ModelS2VT:
 			}
 
 		return feed_dict
+
 	def train(self, savepoint=None):
 		print 'Start training...'
 
@@ -248,7 +273,9 @@ class ModelS2VT:
 				percent = 0
 				for i in range(0, len(train_pair_list) - self.batch_size, self.batch_size):
 					feed_dict = self._prepareTrainFeedDictList(train_pair_list, i)
-					_ = sess.run(self.train_step, feed_dict=feed_dict)
+					_, caption = sess.run([self.train_step, self.caption], feed_dict=feed_dict)
+					caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+					print 'Caption: "{}"'.format(caption_str)
 					if i * 100 / len(train_pair_list) > percent:
 						percent += 1
 						print '{}%'.format(percent)
@@ -260,7 +287,10 @@ class ModelS2VT:
 					caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
 					bleu_list = []
 					for ref_caption in self.data.val_caption_str_list[i]:
-						bleu = bleu_eval.BLEU_fn(caption_str, ref_caption)
+						if caption_str != '':
+							bleu = bleu_eval.BLEU_fn(caption_str, ref_caption)
+						else:
+							bleu = 0.0
 						bleu_list.append(bleu)
 					mean_bleu = np.mean(bleu_list)
 					print 'Caption: "{}", Correct: {}, BLEU: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), mean_bleu)
@@ -276,8 +306,37 @@ class ModelS2VT:
 				else:
 					patience_counter = 0
 					tf.train.Saver().save(sess, self.save_path)
-					last_val_bleu = val_bleu
+					## Remove
+					if epoch >= 2:
+						last_val_bleu = val_bleu
 
+	def predict(self, feat, savepoint=None):
+		if savepoint == None:
+			savepoint = self.save_path
 
+		dummy_feat_list = np.array([feat])
+
+		feed_dict = self._prepareTestFeedDictList(dummy_feat_list, 0)
+		caption = sess.run(self.caption, feed_dict=feed_dict)
+		caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+		print 'Caption: "{}"'.format(caption_str)
+
+		return caption_str
+
+	def testLimited(self, savepoint=None):
+		if savepoint == None:
+			savepoint = self.save_path
+		
+		with tf.Session() as sess:
+			init = tf.global_variables_initializer()
+			sess.run(init)
+			if savepoint != None:
+				tf.train.Saver().restore(sess, savepoint)
+			for i in range(len(self.data.test_limited_feat_list)):
+				feed_dict = self._prepareTestFeedDictList(self.data.test_limited_feat_list, i)
+				caption = sess.run(self.caption, feed_dict=feed_dict)
+				caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+				print 'Caption: "{}"'.format(caption_str)
+		
 model = ModelS2VT()
-model.train()
+model.testLimited()
