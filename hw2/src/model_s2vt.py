@@ -10,9 +10,9 @@ import pyter
 class ModelS2VT:
 
 	## Config
-	frame_emb_size = 500
-	lstm1_size = 1000
-	lstm2_size = 1000
+	frame_emb_size = 700
+	lstm1_size = 1500
+	lstm2_size = 1500
 	batch_size = 80
 	frame_drop_prob = 0.0
 	word_emb_drop_prob = 0.0
@@ -26,8 +26,8 @@ class ModelS2VT:
 	save_path = save_dir + '/model.ckpt'
 	submit_path = 'data/submit_' + model_name
 	lr_init = 0.0001
-	lr_decay_steps = 500
-	lr_decay_rate = 1.0
+	lr_decay_steps = 3000
+	lr_decay_rate = 0.5
 	lr_momentum = 0.9
 	schd_sampling_decay = 0.0
 	patience = 1000
@@ -108,7 +108,11 @@ class ModelS2VT:
 			lstm1_output, lstm1_state = tf.nn.dynamic_rnn(
 				lstm1_basic_cell, inputs=frames_emb_2, 
 				dtype=tf.float32)
-		video_emb = tf.gather(tf.transpose(lstm1_output, [1, 0, 2]), self.max_video_len - 1, name='video_emb')
+		#video_emb = tf.gather(tf.transpose(lstm1_output, [1, 0, 2]), self.max_video_len - 1, name='video_emb')
+		#lstm1_output_drop_prob = tf.cond(training, lambda: tf.constant(0.5), lambda: tf.constant(0.0))
+		#lstm1_output_drop = tf.nn.dropout(lstm1_output, 1.0 - lstm1_output_drop_prob, noise_shape=[self.batch_size, self.max_video_len, 1])
+		w_frame_output = tf.get_variable('w_frame_output', shape=[self.max_video_len], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.01, maxval=0.01))
+		video_emb = tf.reduce_sum(tf.expand_dims(tf.expand_dims(tf.nn.softmax(w_frame_output), -1), 0) * lstm1_output, axis=1)
 
 		## Word prediction
 		w_hidden_word_predict = tf.get_variable('w_hidden_word_predict', shape=[self.lstm1_size, 2000], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
@@ -147,7 +151,7 @@ class ModelS2VT:
 		#w_word_emb = tf.get_variable('w_word_emb', dtype=tf.float32, initializer=w_word_emb_init)
 		w_word_emb = w_word_emb_init
 
-		self.prior_factor = prior_factor = tf.get_variable('prior_factor', initializer=0.1, trainable=True)
+		self.prior_factor = prior_factor = tf.get_variable('prior_factor', initializer=0.01, trainable=True)
 		word_predict_smooth = tf.pow(word_predict_stop_gd, prior_factor)
 		word_predict_smooth_inv = tf.log(word_predict_smooth)
 
@@ -255,7 +259,7 @@ class ModelS2VT:
 			logits=logits_mask, name='seq_losses') * weight_mask
 
 		self.seq_loss = seq_loss = tf.reduce_mean(seq_losses)
-		loss = seq_loss + 1000.0 * word_predict_loss
+		loss = seq_loss + word_predict_loss
 
 		## Optimize
 		lr = tf.train.exponential_decay(self.lr_init, global_step, self.lr_decay_steps, self.lr_decay_rate)
@@ -421,5 +425,5 @@ class ModelS2VT:
 				print 'Caption: "{}"'.format(caption_str)
 		
 model = ModelS2VT()
-#model.train()
-model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-11')
+model.train()
+#model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-11')
