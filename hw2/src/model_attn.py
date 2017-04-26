@@ -108,6 +108,7 @@ class ModelAttn:
 			lstm1_output, lstm1_state = tf.nn.dynamic_rnn(
 				lstm1_basic_cell, inputs=frames_emb_2, 
 				dtype=tf.float32)
+
 		'''
 		## Word prediction
 		w_hidden_word_predict = tf.get_variable('w_hidden_word_predict', shape=[self.lstm1_size, 2000], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
@@ -150,6 +151,8 @@ class ModelAttn:
 		#word_predict_smooth = tf.pow(word_predict_stop_gd, prior_factor)
 		#word_predict_smooth_inv = tf.log(word_predict_smooth)
 
+		attn_init = tf.get_variable('attn_init', shape=[self.lstm1_size], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.01, maxval=0.01))
+
 		def lstm2_loop_fn(time, cell_output, cell_state, loop_state):
 			# elements_finished
 			elements_finished = (time >= ref_caption_len)
@@ -176,9 +179,9 @@ class ModelAttn:
 			# next_input
 			if cell_output is None:
 				## Attention
-				attn_alpha = tf.reduce_sum(tf.nn.l2_normalize(tf.zeros([self.lstm1_size]), -1) * tf.nn.l2_normalize(lstm1_output, -1), axis=-1)
-				attn_alpha_softmax = tf.nn.softmax(attn_alpha, dim=-1)
-				attn_c = tf.reduce_sum(tf.tile(tf.expand_dims(attn_alpha_softmax, 2), [1, 1, self.lstm1_size]) * lstm1_output, axis=1)
+				attn_alpha = tf.reduce_sum(tf.nn.l2_normalize(attn_init, -1) * tf.nn.l2_normalize(lstm1_output, -1), axis=-1, keep_dims=True)
+				attn_alpha_softmax = tf.nn.softmax(attn_alpha, dim=1)
+				attn_c = tf.reduce_sum(attn_alpha_softmax * lstm1_output, axis=1)
 
 				input_word = tf.fill([self.batch_size], self.data.word_index_dict[read_util.ReadUtil.MARKER_BOS])
 				input_word_emb = tf.nn.embedding_lookup(w_word_emb, input_word)
@@ -188,9 +191,9 @@ class ModelAttn:
 				next_input = tf.concat([bos_bit, input_word_emb, attn_c], axis=1)
 			else:
 				## Attention
-				attn_alpha = tf.reduce_sum(tf.nn.l2_normalize(cell_output, -1) * tf.nn.l2_normalize(lstm1_output, -1), axis=-1)
-				attn_alpha_softmax = tf.nn.softmax(attn_alpha, dim=-1)
-				attn_c = tf.reduce_sum(tf.tile(tf.expand_dims(attn_alpha_softmax, 2), [1, 1, self.lstm1_size]) * lstm1_output, axis=1)
+				attn_alpha = tf.reduce_sum(tf.expand_dims(tf.nn.l2_normalize(cell_output, -1), 1) * tf.nn.l2_normalize(lstm1_output, -1), axis=-1, keep_dims=True)
+				attn_alpha_softmax = tf.nn.softmax(attn_alpha, dim=1)
+				attn_c = tf.reduce_sum(attn_alpha_softmax * lstm1_output, axis=1)
 
 				select_ref_prob = tf.maximum(1.0 - self.schd_sampling_decay * tf.cast(global_step, tf.float32), 0.0)
 				input_word = tf.cond(
@@ -432,5 +435,5 @@ class ModelAttn:
 				print 'Caption: "{}"'.format(caption_str)
 		
 model = ModelAttn()
-#model.train()
-model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_attn/model.ckpt-125')
+model.train()
+#model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_attn/model.ckpt-125')
