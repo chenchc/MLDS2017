@@ -151,7 +151,7 @@ class ModelAttn:
 		#word_predict_smooth = tf.pow(word_predict_stop_gd, prior_factor)
 		#word_predict_smooth_inv = tf.log(word_predict_smooth)
 
-		attn_init = tf.get_variable('attn_init', shape=[self.lstm1_size], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.01, maxval=0.01))
+		#attn_init = tf.get_variable('attn_init', shape=[self.lstm1_size], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.01, maxval=0.01))
 
 		def lstm2_loop_fn(time, cell_output, cell_state, loop_state):
 			# elements_finished
@@ -179,7 +179,7 @@ class ModelAttn:
 			# next_input
 			if cell_output is None:
 				## Attention
-				attn_alpha = tf.reduce_sum(tf.nn.l2_normalize(attn_init, -1) * tf.nn.l2_normalize(lstm1_output, -1), axis=-1, keep_dims=True)
+				attn_alpha = tf.zeros([self.batch_size, self.max_video_len, self.lstm1_size])
 				attn_alpha_softmax = tf.nn.softmax(attn_alpha, dim=1)
 				attn_c = tf.reduce_sum(attn_alpha_softmax * lstm1_output, axis=1)
 

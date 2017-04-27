@@ -16,6 +16,7 @@ class ReadUtil:
 	train_caption_list = None
 	train_feat_list = None
 	test_feat_list = None
+	test_id_list = None
 	test_limited_feat_list = None
 	val_caption_list = None
 	val_caption_str_list = None
@@ -35,6 +36,9 @@ class ReadUtil:
 		self.__genWordVecDict()
 
 	def __readTrain(self):
+		if not os.path.isfile(config.train_label_path):
+			return
+
 		## Read train label
 		with open(config.train_label_path, 'r') as file:
 			content = file.read()
@@ -59,10 +63,13 @@ class ReadUtil:
 			self.train_feat_list.append(feat)
 
 	def __readTest(self):
+		if not os.path.isfile(config.test_id_path):
+			return
+
 		## Read test id
 		with open(config.test_id_path, 'r') as file:
 			content = file.read()
-		test_id_list = content.split()
+		self.test_id_list = test_id_list = content.split()
 
 		## Generate feature list
 		self.test_feat_list = []
@@ -71,6 +78,9 @@ class ReadUtil:
 			self.test_feat_list.append(feat)
 	
 	def __readTestLimited(self):
+		if not os.path.isfile(config.test_limited_id_path):
+			return
+
 		## Read test id
 		with open(config.test_limited_id_path, 'r') as file:
 			content = file.read()
@@ -83,6 +93,9 @@ class ReadUtil:
 			self.test_limited_feat_list.append(feat)
 	
 	def __readVal(self):
+		if not os.path.isfile(config.test_public_label_path):
+			return
+
 		## Read val label
 		with open(config.test_public_label_path, 'r') as file:
 			content = file.read()
@@ -106,7 +119,7 @@ class ReadUtil:
 		self.val_feat_list = []
 		for video in val_label:
 			video_id = video['id']
-			feat = np.load(config.test_feat_folder_path + video_id + '.npy')
+			feat = np.load(config.test_public_feat_folder_path + video_id + '.npy')
 			self.val_feat_list.append(feat)
 
 	@staticmethod

@@ -1,11 +1,12 @@
 import bleu_eval
+import json
 import math
 import numpy as np
 import os
 import random
 import read_util
 import tensorflow as tf
-import pyter
+#import pyter
 
 class ModelS2VT:
 
@@ -20,14 +21,15 @@ class ModelS2VT:
 	lstm2_drop_prob = 0.5
 	subsample_rate = 0.0
 	word_list_emb_size = 500
+	beam_size = 3
 
 	model_name = 's2vt'
 	save_dir = 'data/model_' + model_name
 	save_path = save_dir + '/model.ckpt'
 	submit_path = 'data/submit_' + model_name
-	lr_init = 0.0001
+	lr_init = 0.00002
 	lr_decay_steps = 3000
-	lr_decay_rate = 0.5
+	lr_decay_rate = 1.0
 	lr_momentum = 0.9
 	schd_sampling_decay = 0.0
 	patience = 1000
@@ -47,6 +49,7 @@ class ModelS2VT:
 	ref_caption = None
 	training = None
 	weight = None
+	use_ref = None
 
 	## Output tensors
 	loss = None
@@ -54,6 +57,8 @@ class ModelS2VT:
 	train_step = None
 	word_predict_loss = None
 	seq_loss = None
+	next_word_candidate = None
+	seq_loss_batch = None
 
 	def __init__(self):
 		if not os.path.exists(self.save_dir):
@@ -84,6 +89,7 @@ class ModelS2VT:
 		self.training = training = tf.placeholder(tf.bool, shape=[], name='training')
 		self.weight = weight = tf.placeholder(tf.float32, shape=[self.batch_size, self.max_caption_len], name='weight')
 		self.ref_word_list = ref_word_list = tf.placeholder(tf.float32, shape=[self.batch_size, self.total_word_count], name='ref_word_list')
+		self.use_ref = use_ref = tf.placeholder(tf.bool, shape=[], name='use_ref')
 
 		## Frame embedding
 		frame_drop_prob = tf.cond(training, lambda: tf.constant(self.frame_drop_prob), lambda: tf.constant(0.0)) ###
@@ -111,7 +117,7 @@ class ModelS2VT:
 		#video_emb = tf.gather(tf.transpose(lstm1_output, [1, 0, 2]), self.max_video_len - 1, name='video_emb')
 		#lstm1_output_drop_prob = tf.cond(training, lambda: tf.constant(0.5), lambda: tf.constant(0.0))
 		#lstm1_output_drop = tf.nn.dropout(lstm1_output, 1.0 - lstm1_output_drop_prob, noise_shape=[self.batch_size, self.max_video_len, 1])
-		w_frame_output = tf.get_variable('w_frame_output', shape=[self.max_video_len], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.01, maxval=0.01))
+		w_frame_output = tf.get_variable('w_frame_output', shape=[self.max_video_len], dtype=tf.float32, initializer=tf.constant_initializer(0.0))
 		video_emb = tf.reduce_sum(tf.expand_dims(tf.expand_dims(tf.nn.softmax(w_frame_output), -1), 0) * lstm1_output, axis=1)
 
 		## Word prediction
@@ -144,7 +150,7 @@ class ModelS2VT:
 
 		ref_caption_2 = tf.transpose(ref_caption, perm=[1, 0])
 
-		w_logits = tf.get_variable('w_logits', shape=[self.lstm2_size, self.total_word_count], dtype=tf.float32, initializer=tf.random_uniform_initializer(minval=-0.08, maxval=0.08))
+		w_logits = tf.get_variable('w_logits', shape=[self.lstm2_size, self.total_word_count], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
 		b_logits = tf.get_variable('b_logits', shape=[self.total_word_count], dtype=tf.float32, initializer=tf.constant_initializer(0.0))
 
 		w_word_emb_init = tf.constant(np.array([self.data.word_vec_dict[self.data.word_list[i]] for i in range(self.total_word_count)], dtype=np.float32), dtype=tf.float32)
@@ -190,7 +196,7 @@ class ModelS2VT:
 				input_word = tf.cond(
 					training,
 					lambda: tf.where(tf.random_uniform([self.batch_size]) < select_ref_prob, ref_caption_2[time-1], caption),
-					lambda: caption)
+					lambda: tf.cond(use_ref, lambda: ref_caption_2[time-1], lambda: caption))
 				input_word_emb = tf.nn.embedding_lookup(w_word_emb, input_word)
 				word_emb_drop_prob = tf.cond(training, lambda: tf.constant(self.word_emb_drop_prob), lambda: tf.constant(0.0)) ###
 				input_word_emb = tf.nn.dropout(input_word_emb, 1.0 - word_emb_drop_prob) ###
@@ -236,6 +242,9 @@ class ModelS2VT:
 		self.caption = caption = tf.transpose(tf.stack(caption_list), [1, 0])
 		#self.caption = caption = tf.argmax(logits, axis=2, name='caption')
 
+		_, self.next_word_candidate = tf.nn.top_k(tf.gather(tf.gather(logits, 0), tf.gather(ref_caption_len, 0) - 1) - 
+			1000.0 * tf.one_hot(ref_caption[0, ref_caption_len[0] - 2], self.total_word_count), k=self.beam_size)
+
 		## Correct mask
 		#correct_mask = tf.concat([tf.fill([self.batch_size, 1], True), tf.slice(tf.equal(caption, ref_caption), [0, 0], [-1, self.max_caption_len - 1])], axis=-1)
 		correct_mask = tf.cast(tf.cumprod(tf.cast(tf.equal(caption, ref_caption), tf.int32), axis=-1, exclusive=True), tf.bool)
@@ -246,8 +255,9 @@ class ModelS2VT:
 		#position_weight = tf.concat([1.0 / tf.cumsum(tf.fill([self.batch_size, self.max_caption_len / 2], 1.0), axis=-1, exclusive=False, reverse=True), tf.fill([self.batch_size, self.max_caption_len - self.max_caption_len / 2], 1.0)], axis=-1)
 
 		## Loss
-		mask = tf.sequence_mask(ref_caption_len, maxlen=self.max_caption_len, name='mask')
-		mask = tf.logical_and(mask, correct_mask)
+		len_mask = tf.sequence_mask(ref_caption_len, maxlen=self.max_caption_len, name='mask')
+		mask = tf.logical_and(len_mask, correct_mask)
+		#mask = len_mask
 
 		#critical_mask_masked = tf.boolean_mask(critical_mask, mask)
 
@@ -260,6 +270,12 @@ class ModelS2VT:
 
 		self.seq_loss = seq_loss = tf.reduce_mean(seq_losses)
 		loss = seq_loss + word_predict_loss
+
+		self.seq_loss_batch = tf.reduce_sum(tf.reshape(tf.nn.softmax_cross_entropy_with_logits(
+			labels=tf.one_hot(tf.reshape(ref_caption, [-1]), self.total_word_count, dtype=tf.float32),
+			logits=tf.reshape(aggregated_logits, [-1, self.total_word_count])), [self.batch_size, self.max_caption_len])
+			* tf.cast(len_mask, tf.float32), axis=1) / tf.cast(ref_caption_len, tf.float32)
+
 
 		## Optimize
 		lr = tf.train.exponential_decay(self.lr_init, global_step, self.lr_decay_steps, self.lr_decay_rate)
@@ -302,7 +318,8 @@ class ModelS2VT:
 			self.ref_caption: ref_caption_data,
 			self.training: True,
 			self.weight: weight_data,
-			self.ref_word_list: ref_word_list_data
+			self.ref_word_list: ref_word_list_data,
+			self.use_ref: False
 			}
 
 		return feed_dict
@@ -320,7 +337,57 @@ class ModelS2VT:
 			self.frames: frames_data,
 			self.ref_caption_len: ref_caption_len_data,
 			self.ref_caption: ref_caption_data,
-			self.training: False
+			self.training: False,
+			self.use_ref: False
+			}
+
+		return feed_dict
+
+	def _prepareBeamSearchFeedDictListForNextWord(self, feat, sent):
+
+		frames_data = np.zeros(shape=(self.batch_size, self.max_video_len, self.frame_vec_dim), dtype=float)
+		ref_caption_len_data = np.zeros((self.batch_size), dtype=int)
+		ref_caption_data = np.zeros(shape=(self.batch_size, self.max_caption_len), dtype=int)
+		weight_data = np.ones(shape=(self.batch_size, self.max_caption_len), dtype=float)
+
+		frames_data[0] = feat
+		ref_caption_len_data[0] = len(sent) + 1
+
+		for k, word in enumerate(sent):
+			ref_caption_data[0, k] = self.data.word_index_dict[word]
+
+		feed_dict = {
+			self.frames: frames_data,
+			self.ref_caption_len: ref_caption_len_data,
+			self.ref_caption: ref_caption_data,
+			self.training: False,
+			self.weight: weight_data,
+			self.use_ref: True
+			}
+
+		return feed_dict
+
+	def _prepareBeamSearchFeedDictListForScore(self, feat, candidates):
+
+		frames_data = np.zeros(shape=(self.batch_size, self.max_video_len, self.frame_vec_dim), dtype=float)
+		ref_caption_len_data = np.zeros((self.batch_size), dtype=int)
+		ref_caption_data = np.zeros(shape=(self.batch_size, self.max_caption_len), dtype=int)
+		weight_data = np.ones(shape=(self.batch_size, self.max_caption_len), dtype=float)
+
+		for j in range(len(candidates)):
+			frames_data[j] = feat
+			ref_caption_len_data[j] = len(candidates[j])
+
+			for k, word in enumerate(candidates[j]):
+				ref_caption_data[j, k] = self.data.word_index_dict[word]
+
+		feed_dict = {
+			self.frames: frames_data,
+			self.ref_caption_len: ref_caption_len_data,
+			self.ref_caption: ref_caption_data,
+			self.training: False,
+			self.weight: weight_data,
+			self.use_ref: True
 			}
 
 		return feed_dict
@@ -333,9 +400,9 @@ class ModelS2VT:
 			sess.run(init)
 			if savepoint != None:
 				tf.train.Saver().restore(sess, savepoint)
-			last_val_ter = 100.0
+			last_val_bleu = 0.0
 			patience_counter = 0
-			for epoch in range(1000):
+			for epoch in range(0, 1000, 1):
 				print '[Epoch #' + str(epoch) + ']'
 
 				train_pair_list = self._prepareTrainPairList()
@@ -345,56 +412,50 @@ class ModelS2VT:
 					feed_dict = self._prepareTrainFeedDictList(train_pair_list, i)
 					_, caption, wp_loss, seq_loss, prior_factor = sess.run([self.train_step, self.caption, self.word_predict_loss, self.seq_loss, self.prior_factor], feed_dict=feed_dict)
 					caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
-					print 'Caption: "{}", WP loss: {}, Seq loss: {}'.format(caption_str, wp_loss, seq_loss)
-					print prior_factor
+					print 'Caption: "{}", Prior factor: {}, WP loss: {}, Seq loss: {}'.format(caption_str, prior_factor, wp_loss, seq_loss)
 					if i * 100 / len(train_pair_list) > percent:
 						percent += 1
 						print '{}%'.format(percent)
 				
-				if epoch > 1:
+				mean_bleu_list = []
+				max_bleu_list = []
+				for i in range(len(self.data.val_feat_list)):
+					feed_dict = self._prepareTestFeedDictList(self.data.val_feat_list, i)
+					caption = sess.run(self.caption, feed_dict=feed_dict)
+					caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+					bleu_list = []
+					for ref_caption in self.data.val_caption_str_list[i]:
+						if caption_str != '':
+							bleu = bleu_eval.BLEU_fn(caption_str, ref_caption)
+							#bleu = pyter.ter(caption_str, ref_caption)
+						else:
+							bleu = 0.0
+						bleu_list.append(bleu)
+					mean_bleu = np.mean(bleu_list)
+					max_bleu = max(bleu_list)
+					print 'Caption: "{}", Correct: {}, Average BLEU: {}, Best BLEU: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), mean_bleu, max_bleu)
+					mean_bleu_list.append(mean_bleu)
+					max_bleu_list.append(max_bleu)
 					'''
-					mean_bleu_list = []
-					max_bleu_list = []
-					'''
-					ter_score_list = []
-					for i in range(len(self.data.val_feat_list)):
-						feed_dict = self._prepareTestFeedDictList(self.data.val_feat_list, i)
-						caption = sess.run(self.caption, feed_dict=feed_dict)
-						caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
-						bleu_list = []
-						'''
-						for ref_caption in self.data.val_caption_str_list[i]:
-							if caption_str != '':
-								#bleu = bleu_eval.BLEU_fn(caption_str, ref_caption)
-								bleu = pyter.ter(caption_str, ref_caption)
-							else:
-								bleu = 0.0
-							bleu_list.append(bleu)
-						mean_bleu = np.mean(bleu_list)
-						max_bleu = max(bleu_list)
-						print 'Caption: "{}", Correct: {}, Average BLEU: {}, Best BLEU: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), mean_bleu, max_bleu)
-						mean_bleu_list.append(mean_bleu)
-						max_bleu_list.append(max_bleu)
-						'''
-						ter_score = pyter.ter(caption_str, random.choice(self.data.val_caption_str_list[i]))
-						ter_score_list.append(ter_score)
-						print 'Caption: "{}", Correct: {}, TER: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), ter_score)
-					'''
-					val_bleu = np.mean(max_bleu_list)
-					print 'Validation BLEU: {}'.format(val_bleu)
-					'''
-					val_ter = np.mean(ter_score_list)
-					print 'Validation TER: {}'.format(val_ter)
-
-					if val_ter > last_val_ter:
-						patience_counter += 1
-						print 'Patience Counter: {}'.format(patience_counter)
-						if patience_counter > self.patience:
-							break
-					else:
-						patience_counter = 0
-						last_val_ter = val_ter
-					tf.train.Saver().save(sess, self.save_path, global_step=epoch)
+					ter_score = pyter.ter(caption_str, random.choice(self.data.val_caption_str_list[i]))
+					ter_score_list.append(ter_score)
+					print 'Caption: "{}", Correct: {}, TER: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), ter_score)
+				'''
+				val_bleu = np.mean(mean_bleu_list)
+				print 'Validation BLEU: {}'.format(val_bleu)
+				'''
+				val_ter = np.mean(ter_score_list)
+				print 'Validation TER: {}'.format(val_ter)
+				'''
+				if val_bleu < last_val_bleu:
+					patience_counter += 1
+					print 'Patience Counter: {}'.format(patience_counter)
+					if patience_counter > self.patience:
+						break
+				else:
+					patience_counter = 0
+					last_val_bleu = val_bleu
+				tf.train.Saver().save(sess, self.save_path, global_step=epoch)
 
 	def predict(self, feat, savepoint=None):
 		if savepoint == None:
@@ -404,26 +465,110 @@ class ModelS2VT:
 
 		feed_dict = self._prepareTestFeedDictList(dummy_feat_list, 0)
 		caption = sess.run(self.caption, feed_dict=feed_dict)
-		caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+		caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption.tolist()])
 		print 'Caption: "{}"'.format(caption_str)
 
 		return caption_str
 
 	def testLimited(self, savepoint=None):
-		if savepoint == None:
-			savepoint = self.save_path
-		
 		with tf.Session() as sess:
 			init = tf.global_variables_initializer()
 			sess.run(init)
 			if savepoint != None:
 				tf.train.Saver().restore(sess, savepoint)
 			for i in range(len(self.data.test_limited_feat_list)):
-				feed_dict = self._prepareTestFeedDictList(self.data.test_limited_feat_list, i)
- 				caption = sess.run(self.caption, feed_dict=feed_dict)
-				caption_str = self.data.tokenListToCaption([self.data.word_list[word] for word in caption[0].tolist()])
+				caption = self.predictByBeamSearch(sess, self.data.test_limited_feat_list[i])
+				caption_str = self.data.tokenListToCaption(caption)
 				print 'Caption: "{}"'.format(caption_str)
-		
+
+	def predictByBeamSearch(self, sess, feat):
+		over = False
+		best_list = [[]]
+		best_score_list = [9999.9]
+		length = 0
+		while not over and length < 10:
+			candidate_list = []
+			candidate_score_list = []
+			over = True
+			for i, best in enumerate(best_list):
+				if best != [] and best[-1] == self.data.MARKER_EOS:
+					candidate_list.append(best)
+					candidate_score_list.append(best_score_list[i])
+					continue
+
+				over = False
+				feed_dict = self._prepareBeamSearchFeedDictListForNextWord(feat, best)
+				next_word_candidate_index = sess.run(self.next_word_candidate, feed_dict=feed_dict)
+			
+				candidates = []
+				for j in next_word_candidate_index.tolist():
+					candidates.append(best + [self.data.word_list[j]])
+
+				feed_dict = self._prepareBeamSearchFeedDictListForScore(feat, candidates)
+				seq_losses = sess.run(self.seq_loss_batch, feed_dict=feed_dict)
+
+				for j in range(len(candidates)):
+					candidate_list.append(candidates[j])
+					candidate_score_list.append(seq_losses[j])
+
+			del best_list[:]
+			del best_score_list[:]
+			win_list = sorted(range(len(candidate_list)), key=lambda i: candidate_score_list[i])[:self.beam_size]
+
+			for win in win_list:
+				best_list.append(candidate_list[win])
+				best_score_list.append(candidate_score_list[win])
+			length += 1
+
+		return best_list[0]
+
+	def validate(self, savepoint=None):
+		with tf.Session() as sess:
+			init = tf.global_variables_initializer()
+			sess.run(init)
+			if savepoint != None:
+				tf.train.Saver().restore(sess, savepoint)
+			mean_bleu_list = []
+			max_bleu_list = []
+			for i in range(len(self.data.val_feat_list)):
+				caption = self.predictByBeamSearch(sess, self.data.val_feat_list[i])
+				caption_str = self.data.tokenListToCaption(caption)
+				bleu_list = []
+				for ref_caption in self.data.val_caption_str_list[i]:
+					if caption_str != '':
+						bleu = bleu_eval.BLEU_fn(caption_str, ref_caption)
+						#bleu = pyter.ter(caption_str, ref_caption)
+					else:
+						bleu = 0.0
+					bleu_list.append(bleu)
+				mean_bleu = np.mean(bleu_list)
+				max_bleu = max(bleu_list)
+				print 'Caption: "{}", Correct: {}, Average BLEU: {}, Best BLEU: {}'.format(caption_str, random.choice(self.data.val_caption_str_list[i]), mean_bleu, max_bleu)
+				mean_bleu_list.append(mean_bleu)
+				max_bleu_list.append(max_bleu)
+			val_bleu = np.mean(mean_bleu_list)
+			print 'Validation BLEU: {}'.format(val_bleu)
+
+	def test(self, savepoint=None):
+		with tf.Session() as sess:
+			init = tf.global_variables_initializer()
+			sess.run(init)
+			if savepoint != None:
+				tf.train.Saver().restore(sess, savepoint)
+
+			output = []
+			for i in range(len(self.data.test_feat_list)):
+				caption = self.predictByBeamSearch(sess, self.data.test_feat_list[i])
+				caption_str = self.data.tokenListToCaption(caption)
+				print 'Caption: "{}"'.format(caption_str)
+				output.append({'caption': caption_str, 'id': self.data.test_id_list[i]})
+
+			with open('output.json', 'w') as file:
+				json.dump(output, file, indent=4)
+			
+
 model = ModelS2VT()
-model.train()
-#model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-11')
+#model.train('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-84')
+#model.testLimited('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-117')
+#model.validate('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-104')
+model.test('/tmp3/chenchc/MLDS2017/hw2/data/model_s2vt/model.ckpt-104')
