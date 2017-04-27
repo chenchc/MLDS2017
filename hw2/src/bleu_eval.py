@@ -85,6 +85,19 @@ def geometric_mean(precisions):
     return (reduce(operator.mul, precisions)) ** (1.0 / len(precisions))
 
 
+def BLEU_fn(s, t):
+    score = 0.  
+    count = 0
+
+    count += 1
+    candidate = [s.strip()]
+    references = [[t.strip()]] 
+    precisions = []
+    pr, bp = count_ngram(candidate, references, 1)
+    precisions.append(pr)
+    score = geometric_mean(precisions) * bp
+    return score/count
+
 def BLEU():
 
     score = 0.  
