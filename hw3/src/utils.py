@@ -1,4 +1,5 @@
 import config
+import numpy as np
 import os
 import re
 import scipy.misc
@@ -113,6 +114,19 @@ class Utils:
 			tensor = scipy.misc.imresize(tensor, [64, 64, 3], interp='bicubic')
 		#skimage.io.imsave('{}/sample_{}_{}.jpg'.format(config.OUTPUT_PATH, testing_text_id, sample_id), tensor)
 		scipy.misc.imsave('{}/sample_{}_{}.jpg'.format(config.OUTPUT_PATH, testing_text_id, sample_id), tensor)
+
+	@staticmethod
+	def saveImageTile(testing_text_id, sample_id, tensors):
+		newTensor = np.zeros([tensors.shape[0], 64, 64, 3])
+		for i, tensor in enumerate(tensors):
+			if tensor.shape != (64, 64, 3):
+				tensor = scipy.misc.imresize(tensor, [64, 64, 3], interp='bicubic')
+			newTensor[i] = tensor
+
+		tiled = np.hstack(newTensor)
+
+		#skimage.io.imsave('{}/sample_{}_{}.jpg'.format(config.OUTPUT_PATH, testing_text_id, sample_id), tensor)
+		scipy.misc.imsave('{}/sample_{}_{}.jpg'.format(config.OUTPUT_PATH, testing_text_id, sample_id), tiled)
 
 if __name__ == '__main__':
 	utils = Utils()
