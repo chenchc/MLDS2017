@@ -15,12 +15,12 @@ class ModelBEGAN:
 	filter_dim = 128
 	latent_dim = 64
 	color_emb_dim = 8
-	gamma = 0.5
+	gamma_init = 1.0
+	gamma_decay = 0.01
+	gamma_min = 0.3
 	lambda_k = 0.001
-	gamma_for_wrong = 1.0
-	lambda_k_for_wrong = 0.0001
-	lr_init = 0.0000125
-	lr_decay_steps = 10000
+	gamma_for_wrong = 1.2
+	lr_init = 0.00005
 	lr_decay_rate = 0.5
 	num_sample = 5
 	real_image_threshold = 1.5
@@ -47,6 +47,8 @@ class ModelBEGAN:
 	lr = None
 
 	## Output tensors
+	update_gamma = None
+	gamma = None
 	update_k = None
 	convergence_measure = None
 	train_step = None
@@ -76,6 +78,10 @@ class ModelBEGAN:
 		## Real image loss threshold
 		self.loss_real_image_threshold = loss_real_image_threshold = tf.get_variable('loss_real_image_threshold', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(1.0), trainable=False)
 
+		## Annealing Gamma
+		gamma = tf.get_variable('gamma', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.gamma_init), trainable=False)
+		self.update_gamma = tf.maximum(self.gamma_min, tf.assign_sub(gamma, self.gamma_decay), name='update_gamma')
+
 		## Input placeholders
 		self.training = training = tf.placeholder(tf.bool, shape=[], name='training')
 		self.real_image = real_image = tf.placeholder(tf.uint8, shape=[self.batch_size]+self.data.TRAIN_IMAGE_SHAPE, name='real_image')
@@ -83,7 +89,7 @@ class ModelBEGAN:
 		self.hair_color = hair_color = tf.placeholder(tf.int32, shape=[self.batch_size], name='hair_color')
 		self.eyes_color = eyes_color = tf.placeholder(tf.int32, shape=[self.batch_size], name='eyes_color')
 
-		## Condition embedding
+		## Real image colors and their embeddings
 		def colorEmb(color, dim, variable_scope, reuse=False):
 			with tf.variable_scope(variable_scope) as scope:
 				if reuse:
@@ -136,8 +142,6 @@ class ModelBEGAN:
 		def reconLoss(img, restored_img, scope, reserve_batch=False):
 			with tf.variable_scope(scope):
 				recon_loss = tf.abs(img - restored_img)
-				#recon_loss = recon_loss * tf.norm(tf.constant(
-				#	[4.0 * 0.299 - 0.169 + 0.5, 4.0 * 0.587 - 0.331 - 0.419, 4.0 * 0.114 + 0.5- 0.081]))
 				recon_loss = tf.reduce_sum(recon_loss * tf.constant([0.299, 0.587, 0.114]), axis=-1)
 				if reserve_batch:
 					recon_loss = tf.reshape(recon_loss, [self.batch_size, -1])
@@ -148,9 +152,7 @@ class ModelBEGAN:
 		
 		## Loss
 		self.k = k = tf.get_variable('k', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(0.0), trainable=False)
-		#self.k_for_wrong = k_for_wrong = tf.get_variable('k_for_wrong', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(0.0), trainable=False)
 
-		#self.loss_real_image = loss_real_image = reconLoss(real_image, restored_real_image, 'real_image')
 		loss_real_image_batch = reconLoss(real_image, restored_real_image, 'real_image_batch', reserve_batch=True)
 		#qualified_mask = tf.less(loss_real_image_batch, loss_real_image_threshold)
 		qualified_mask = tf.fill([self.batch_size], True)
@@ -160,37 +162,21 @@ class ModelBEGAN:
 		loss_real_image_wrong_cond_batch = reconLoss(real_image, restored_real_image_wrong_cond, 'real_image_wrong_cond_batch', reserve_batch=True)
 		loss_real_image_wrong_cond_batch = tf.boolean_mask(loss_real_image_wrong_cond_batch, qualified_mask)
 		self.loss_real_image_wrong_cond = loss_real_image_wrong_cond = tf.reduce_mean(loss_real_image_wrong_cond_batch, name='loss_real_image_wrong_cond')
-		'''
-		effective_mask = tf.logical_and(tf.not_equal(hair_color, self.color_unspecified_index), tf.not_equal(eyes_color, self.color_unspecified_index))
-		effective_mask = tf.boolean_mask(effective_mask, qualified_mask)
-		loss_effective_real_image = tf.reduce_sum(tf.boolean_mask(loss_real_image_batch, effective_mask))
-		loss_effective_real_image_wrong_cond = tf.reduce_sum(tf.boolean_mask(loss_real_image_wrong_cond_batch, effective_mask))
-		'''
+
 		loss_cond = tf.reduce_mean(tf.maximum(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch, 0.0))
 
 		self.loss_gen_image = loss_gen_image = reconLoss(gen_image, restored_gen_image, 'gen_image')
 		self.loss_gen_image_batch = reconLoss(gen_image, restored_gen_image, 'gen_image_batch', reserve_batch=True)
 		loss_gen_image_for_d = reconLoss(gen_image_for_d, restored_gen_image_for_d, 'gen_image_for_d')
 		loss_generator = loss_gen_image
-		#loss_discriminator = loss_real_image + k_for_wrong * (loss_real_image - loss_real_image_wrong_cond) - k * loss_gen_image_for_d
-		#loss_discriminator = loss_real_image + k_for_wrong * tf.abs(self.gamma_for_wrong * tf.stop_gradient(loss_real_image) - loss_real_image_wrong_cond) - k * loss_gen_image_for_d
 		loss_discriminator = loss_real_image + loss_cond - k * loss_gen_image_for_d
 		
 		self.update_k = update_k = tf.assign_add(k, self.lambda_k * (self.gamma * loss_real_image - loss_gen_image), name='update_k')
-		#update_k_for_wrong = tf.assign_add(k_for_wrong, self.lambda_k_for_wrong * (self.gamma_for_wrong * loss_effective_real_image - loss_effective_real_image_wrong_cond))
-		'''
-		self.update_k_for_wrong = update_k_for_wrong = tf.cond(
-			tf.less(update_k_for_wrong, 0.0),
-			lambda: tf.assign(k_for_wrong, 0.0),
-			lambda: k_for_wrong)
-		'''
 		self.convergence_measure = convergence_measure = tf.add(loss_real_image, tf.abs(self.gamma * loss_real_image - loss_gen_image), name='convergence_measure')
 		
 		## Optimization
-		#lr = tf.train.exponential_decay(self.lr_init, global_step, self.lr_decay_steps, self.lr_decay_rate)
 		self.lr = lr = tf.get_variable('lr', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.lr_init))
 		optimizer = tf.train.AdamOptimizer(lr, beta1=0.5, beta2=0.999)
-		#optimizer = tf.train.GradientDescentOptimizer(lr)
 		grad_loss_generator = optimizer.compute_gradients(loss_generator, var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'generator/'))
 		self.test = grad_loss_discriminator = optimizer.compute_gradients(loss_discriminator, var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'discriminator/'))
 		self.train_step = train_step = optimizer.apply_gradients(grad_loss_generator + grad_loss_discriminator, global_step=global_step, name='train_step')
@@ -213,7 +199,6 @@ class ModelBEGAN:
 
 			def doUpscaling(input, size):
 				output = tf.image.resize_bilinear(input, size, name='output')
-				#output = tf.image.resize_nearest_neighbor(input, size, name='output')
 				return output
 
 			with tf.variable_scope('layer1'):
@@ -259,8 +244,6 @@ class ModelBEGAN:
 
 			with tf.variable_scope('output'):
 				output = tf.layers.conv2d(conv4_2, 3, [3, 3], kernel_initializer=tf.contrib.layers.xavier_initializer(), bias_initializer=tf.constant_initializer(0.5), padding='SAME')
-				#output = 1.0 / (1.0 + tf.exp(-4.0 * output))
-				#output = tf.nn.sigmoid(output, name='output')
 
 		return output
 				
@@ -273,13 +256,10 @@ class ModelBEGAN:
 			return output
 
 		def doUpscaling(input, size):
-			#output = tf.image.resize_nearest_neighbor(input, size, name='output')
 			output = tf.image.resize_bilinear(input, size, name='output')
 			return output
 
 		def doDownscaling(input, size):
-			#output = tf.layers.average_pooling2d(input, [2, 2], [2, 2], name='output')
-			#assert size == output.shape.as_list()[1:3]
 			output = tf.image.resize_bilinear(input, size, name='output')
 			return output
 			
@@ -327,14 +307,6 @@ class ModelBEGAN:
 					z = tf.add(tf.matmul(conv4_2, w), b, name='z')
 
 		with tf.variable_scope('discriminator') as scope:
-			'''
-			if isWrong:
-				with tf.variable_scope('wrong_text'):
-					extended_z = tf.concat([z, color_emb], -1)
-					extended_z = tf.layers.dense(extended_z, self.latent_dim, kernel_initializer=tf.contrib.layers.xavier_initializer())
-					extended_z = tf.nn.elu(extended_z, name='extended_z')
-			else:
-			'''
 			if reuse_scope:
 				scope.reuse_variables()
 			with tf.variable_scope('extended_z'):
@@ -386,8 +358,6 @@ class ModelBEGAN:
 
 				with tf.variable_scope('output'):
 					output = tf.layers.conv2d(dec_conv4_2, 3, [3, 3], kernel_initializer=tf.contrib.layers.xavier_initializer(), bias_initializer=tf.constant_initializer(0.5), padding='SAME')
-					#output = 1.0 / (1.0 + tf.exp(-4.0 * output))
-					#output = tf.nn.sigmoid(output, name='output')
 			
 		return output
 
@@ -460,6 +430,27 @@ class ModelBEGAN:
 			}
 		gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
 		self.data.saveImageTile('training', 'tile_br', gen_image)
+		feed_dict = {
+			self.training: False,
+			self.hair_color: np.full([self.batch_size], self.data.color_index_dict['red'], dtype=np.int32),
+			self.eyes_color: np.full([self.batch_size], self.data.color_index_dict['red'], dtype=np.int32)
+			}
+		gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
+		self.data.saveImageTile('training', 'tile_rr', gen_image)
+		feed_dict = {
+			self.training: False,
+			self.hair_color: np.full([self.batch_size], self.data.color_index_dict['yellow'], dtype=np.int32),
+			self.eyes_color: np.full([self.batch_size], self.data.color_index_dict['yellow'], dtype=np.int32)
+			}
+		gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
+		self.data.saveImageTile('training', 'tile_yy', gen_image)
+		feed_dict = {
+			self.training: False,
+			self.hair_color: np.full([self.batch_size], self.data.color_index_dict['white'], dtype=np.int32),
+			self.eyes_color: np.full([self.batch_size], self.data.color_index_dict['yellow'], dtype=np.int32)
+			}
+		gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
+		self.data.saveImageTile('training', 'tile_wy', gen_image)
 
 	def train(self, savepoint=None):
 		print 'Start training...'
@@ -489,11 +480,11 @@ class ModelBEGAN:
 				percent = 1
 				for step in range(0, len(train_pair_list), self.batch_size):
 					feed_dict = self.__prepareTrainFeedDictList(train_pair_list, step)
-					#_, _, convergence_measure, loss_real_image = sess.run([self.train_step, self.update_k, self.convergence_measure, self.loss_real_image_batch], feed_dict=feed_dict)
 					_, _, convergence_measure, loss_real_image, k, loss_real, loss_gen, loss_wrong = sess.run([self.train_step, self.update_k, self.convergence_measure, self.loss_real_image_batch, self.k, self.loss_real_image, self.loss_gen_image, self.loss_real_image_wrong_cond], feed_dict=feed_dict)
 					print 'step: {}, k: {}, real loss: {}, gen loss: {}, wrong loss: {}'.format(step, k, loss_real, loss_gen, loss_wrong)
+					## Handling NaN
 					if math.isnan(convergence_measure):
-					#if True:
+						print 'NaN is coming!!!'
 						tvars = tf.trainable_variables()
 						tvars_vals = sess.run(tvars)
 
@@ -501,8 +492,14 @@ class ModelBEGAN:
 							print(var.name, val)  # Prints the name of the variable alongside its value.
 							if np.isnan(val).any():
 								print 'BOOM!!!'
+
+						lr = lr * self.lr_decay_rate
+						update_lr = tf.assign(self.lr, tf.constant(lr, dtype=tf.float32))
+						sess.run([update_lr])
+						print 'LR change to: {}'.format(lr)
+						global_convergence_measure_history = []
+						continue
 						
-						raw_input()
 					convergence_measure_history.append(convergence_measure)
 					loss_real_image_history = np.concatenate((loss_real_image_history, loss_real_image))
 					
@@ -531,10 +528,14 @@ class ModelBEGAN:
 				last_convergence_measure = new_convergence_measure
 				global_convergence_measure_history = []
 
-				saver.save(sess, self.save_path)
+				## Update gamma
+				gamma = sess.run([self.update_gamma])
+				print 'Gamma change to: {}'.format(gamma)
+
+				saver.save(sess, self.save_path, global_step=epoch)
 			
 		
 if __name__ == '__main__':
 	model = ModelBEGAN()
-	model.train('data/model_began/model.ckpt')
-	#model.train()
+	#model.train('data/model_began/model.ckpt')
+	model.train()
