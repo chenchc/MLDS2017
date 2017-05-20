@@ -3,6 +3,7 @@ import numpy as np
 import os
 import re
 import scipy.misc
+import skimage.exposure
 import pickle
 
 class Utils:
@@ -41,9 +42,11 @@ class Utils:
 		while os.path.isfile(image_path(i)):
 			#img = skimage.io.imread(image_path(i))
 			img = scipy.misc.imread(image_path(i))
+			img = skimage.exposure.equalize_adapthist(img)
 			if img.shape != self.TRAIN_IMAGE_SHAPE:
 				img = scipy.misc.imresize(img, self.TRAIN_IMAGE_SHAPE, interp='bicubic')
 			self.train_image_list.append(img)
+			self.saveImage('img', str(i), img)
 			i += 1
 
 		file = open(config.IMAGES_CACHED_PATH, 'w')
@@ -91,6 +94,7 @@ class Utils:
 					self.train_eyes_color_list.append(eyes_color)
 
 		self.color_index_dict = dict([(self.color_list[i], i) for i in range(len(self.color_list))])
+		print 'Color List: {}'.format(self.color_list)
 
 	def __readTest(self):
 		self.test_list = dict()
