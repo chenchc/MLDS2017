@@ -14,16 +14,16 @@ class ModelBEGAN:
 	batch_size = 16
 	filter_dim = 128
 	latent_dim = 64
-	color_emb_dim = 8
-	gamma_init = 1.0
-	gamma_decay = 0.01
-	gamma_min = 0.3
+	color_emb_dim = 16
+	gamma_init = 0.5
+	gamma_decay = 0.005
+	gamma_min = 0.5
 	lambda_k = 0.001
-	gamma_for_wrong = 1.2
-	lr_init = 0.00005
+	gamma_for_wrong = 1.1
+	lr_init = 0.000025
 	lr_decay_rate = 0.5
 	num_sample = 5
-	real_image_threshold = 1.5
+	real_image_threshold = 2.0
 
 	model_name = 'began'
 	save_dir = 'data/model_' + model_name
@@ -79,8 +79,8 @@ class ModelBEGAN:
 		self.loss_real_image_threshold = loss_real_image_threshold = tf.get_variable('loss_real_image_threshold', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(1.0), trainable=False)
 
 		## Annealing Gamma
-		gamma = tf.get_variable('gamma', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.gamma_init), trainable=False)
-		self.update_gamma = tf.maximum(self.gamma_min, tf.assign_sub(gamma, self.gamma_decay), name='update_gamma')
+		self.gamma = gamma = tf.get_variable('gamma', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.gamma_init), trainable=False)
+		self.update_gamma = tf.assign(gamma, tf.maximum(self.gamma_min, gamma - self.gamma_decay), name='update_gamma')
 
 		## Input placeholders
 		self.training = training = tf.placeholder(tf.bool, shape=[], name='training')
@@ -99,6 +99,8 @@ class ModelBEGAN:
 					tf.equal(color, self.color_unspecified_index),
 					tf.fill([self.batch_size, dim], 0.0),
 					tf.nn.embedding_lookup(w, color, name='color_emb'))
+				#color_emb = tf.nn.embedding_lookup(w, color)
+				#color_emb = tf.tanh(color_emb)
 			return color_emb
 
 		with tf.variable_scope('generator'):
@@ -142,20 +144,32 @@ class ModelBEGAN:
 		def reconLoss(img, restored_img, scope, reserve_batch=False):
 			with tf.variable_scope(scope):
 				recon_loss = tf.abs(img - restored_img)
-				recon_loss = tf.reduce_sum(recon_loss * tf.constant([0.299, 0.587, 0.114]), axis=-1)
+				#recon_loss = tf.reduce_sum(recon_loss * tf.constant([0.299, 0.587, 0.114]), axis=-1)
+				recon_loss = tf.reduce_mean(recon_loss, axis=-1)
 				if reserve_batch:
 					recon_loss = tf.reshape(recon_loss, [self.batch_size, -1])
 					recon_loss = tf.reduce_mean(recon_loss, axis=1, name='recon_loss')
 				else:
 					recon_loss = tf.reduce_mean(recon_loss, name='recon_loss')
 			return recon_loss
-		
+	
+		def outOfBoundLoss(img, scope, reserve_batch=False):
+			with tf.variable_scope(scope):
+				out_of_bound_loss = (tf.square(img - 0.5) - 0.25) * tf.cast(tf.logical_or(tf.less(img, 0.0), tf.greater(img, 1.0)), tf.float32)
+				out_of_bound_loss = tf.reduce_mean(out_of_bound_loss, axis=-1)
+				if reserve_batch:
+					out_of_bound_loss = tf.reshape(out_of_bound_loss, [self.batch_size, -1])
+					out_of_bound_loss = tf.reduce_mean(out_of_bound_loss, axis=1, name='out_of_bound_loss')
+				else:
+					out_of_bound_loss = tf.reduce_mean(out_of_bound_loss, name='out_of_bound_loss')
+			return out_of_bound_loss
+
 		## Loss
 		self.k = k = tf.get_variable('k', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(0.0), trainable=False)
 
 		loss_real_image_batch = reconLoss(real_image, restored_real_image, 'real_image_batch', reserve_batch=True)
-		#qualified_mask = tf.less(loss_real_image_batch, loss_real_image_threshold)
-		qualified_mask = tf.fill([self.batch_size], True)
+		qualified_mask = tf.less(loss_real_image_batch, loss_real_image_threshold)
+		#qualified_mask = tf.fill([self.batch_size], True)
 		self.loss_real_image_batch = loss_real_image_batch = tf.boolean_mask(loss_real_image_batch, qualified_mask)
 		self.loss_real_image = loss_real_image = tf.reduce_mean(loss_real_image_batch, name='loss_real_image')
 
@@ -163,22 +177,24 @@ class ModelBEGAN:
 		loss_real_image_wrong_cond_batch = tf.boolean_mask(loss_real_image_wrong_cond_batch, qualified_mask)
 		self.loss_real_image_wrong_cond = loss_real_image_wrong_cond = tf.reduce_mean(loss_real_image_wrong_cond_batch, name='loss_real_image_wrong_cond')
 
-		loss_cond = tf.reduce_mean(tf.maximum(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch, 0.0))
+		#loss_cond = tf.reduce_mean(tf.maximum(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch, 0.0))
+		loss_cond = tf.reduce_mean(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch)
 
+		self.oob_loss_gen_image = oob_loss_gen_image = outOfBoundLoss(gen_image, 'oob_loss_gen_image')
 		self.loss_gen_image = loss_gen_image = reconLoss(gen_image, restored_gen_image, 'gen_image')
-		self.loss_gen_image_batch = reconLoss(gen_image, restored_gen_image, 'gen_image_batch', reserve_batch=True)
+		self.loss_gen_image_batch = reconLoss(gen_image, restored_gen_image, 'gen_image_batch', reserve_batch=True) + outOfBoundLoss(gen_image, 'gen_image_batch', reserve_batch=True)
 		loss_gen_image_for_d = reconLoss(gen_image_for_d, restored_gen_image_for_d, 'gen_image_for_d')
-		loss_generator = loss_gen_image
+		loss_generator = loss_gen_image + oob_loss_gen_image
 		loss_discriminator = loss_real_image + loss_cond - k * loss_gen_image_for_d
 		
-		self.update_k = update_k = tf.assign_add(k, self.lambda_k * (self.gamma * loss_real_image - loss_gen_image), name='update_k')
+		self.update_k = update_k = tf.assign(k, tf.maximum(0.0, k + self.lambda_k * (self.gamma * loss_real_image - loss_gen_image)), name='update_k')
 		self.convergence_measure = convergence_measure = tf.add(loss_real_image, tf.abs(self.gamma * loss_real_image - loss_gen_image), name='convergence_measure')
 		
 		## Optimization
 		self.lr = lr = tf.get_variable('lr', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.lr_init))
 		optimizer = tf.train.AdamOptimizer(lr, beta1=0.5, beta2=0.999)
 		grad_loss_generator = optimizer.compute_gradients(loss_generator, var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'generator/'))
-		self.test = grad_loss_discriminator = optimizer.compute_gradients(loss_discriminator, var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'discriminator/'))
+		grad_loss_discriminator = optimizer.compute_gradients(loss_discriminator, var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'discriminator/'))
 		self.train_step = train_step = optimizer.apply_gradients(grad_loss_generator + grad_loss_discriminator, global_step=global_step, name='train_step')
 		
 		## Print trainable variables
@@ -457,7 +473,7 @@ class ModelBEGAN:
 
 		gc.disable()
 		with tf.device('/cpu:0'):
-			saver = tf.train.Saver()
+			saver = tf.train.Saver(allow_empty=True)
 
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = True
@@ -467,10 +483,14 @@ class ModelBEGAN:
 			if savepoint != None:
 				saver.restore(sess, savepoint)
 
+			gamma = sess.run([self.update_gamma])
+			print 'Gamma change to: {}'.format(gamma)
+
 			global_convergence_measure_history = []
 			last_convergence_measure = 1.0
 			lr = self.lr_init
-			for epoch in range(0, 1000, 1):
+			last_checkpoint = None
+			for epoch in range(16, 1000, 1):
 				print '[Epoch #{}]'.format(str(epoch))
 
 				train_pair_list = self.__prepareTrainPairList()
@@ -480,8 +500,8 @@ class ModelBEGAN:
 				percent = 1
 				for step in range(0, len(train_pair_list), self.batch_size):
 					feed_dict = self.__prepareTrainFeedDictList(train_pair_list, step)
-					_, _, convergence_measure, loss_real_image, k, loss_real, loss_gen, loss_wrong = sess.run([self.train_step, self.update_k, self.convergence_measure, self.loss_real_image_batch, self.k, self.loss_real_image, self.loss_gen_image, self.loss_real_image_wrong_cond], feed_dict=feed_dict)
-					print 'step: {}, k: {}, real loss: {}, gen loss: {}, wrong loss: {}'.format(step, k, loss_real, loss_gen, loss_wrong)
+					_, _, convergence_measure, loss_real_image, k, loss_real, loss_gen, loss_wrong, loss_oob = sess.run([self.train_step, self.update_k, self.convergence_measure, self.loss_real_image_batch, self.k, self.loss_real_image, self.loss_gen_image, self.loss_real_image_wrong_cond, self.oob_loss_gen_image], feed_dict=feed_dict)
+					print 'step: {}, k: {}, real loss: {}, gen loss: {}, wrong loss: {}, OOB loss: {}'.format(step, k, loss_real, loss_gen, loss_wrong, loss_oob)
 					## Handling NaN
 					if math.isnan(convergence_measure):
 						print 'NaN is coming!!!'
@@ -493,6 +513,7 @@ class ModelBEGAN:
 							if np.isnan(val).any():
 								print 'BOOM!!!'
 
+						saver.restore(sess, last_checkpoint)
 						lr = lr * self.lr_decay_rate
 						update_lr = tf.assign(self.lr, tf.constant(lr, dtype=tf.float32))
 						sess.run([update_lr])
@@ -525,6 +546,8 @@ class ModelBEGAN:
 					update_lr = tf.assign(self.lr, tf.constant(lr, dtype=tf.float32))
 					sess.run([update_lr])
 					print 'LR change to: {}'.format(lr)
+					#self.gamma_for_wrong = 0.0
+					#print 'Cond Throttling!'
 				last_convergence_measure = new_convergence_measure
 				global_convergence_measure_history = []
 
@@ -532,10 +555,10 @@ class ModelBEGAN:
 				gamma = sess.run([self.update_gamma])
 				print 'Gamma change to: {}'.format(gamma)
 
-				saver.save(sess, self.save_path, global_step=epoch)
+				last_checkpoint = saver.save(sess, self.save_path, global_step=epoch)
 			
 		
 if __name__ == '__main__':
 	model = ModelBEGAN()
-	#model.train('data/model_began/model.ckpt')
-	model.train()
+	model.train('data/model_began/model.ckpt-15')
+	#model.train()
