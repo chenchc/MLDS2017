@@ -11,6 +11,7 @@ class Utils:
 	TRAIN_IMAGE_SHAPE = [64, 64, 3]
 	COLOR_UNSPECIFIED = '<un>'
 	COLOR_EXCLUSION_LIST = ['long', 'short', 'pubic', 'damage', 'bicolored']
+	COLOR_ALIAS = {'blonde': 'yellow'}
 
 	color_list = None
 	train_image_list = None
@@ -71,6 +72,8 @@ class Utils:
 						color = tag.split(' ')[0]
 						if color in self.COLOR_EXCLUSION_LIST:
 							continue
+						if color in self.COLOR_ALIAS:
+							color = self.COLOR_ALIAS[color]
 						if hair_color != self.COLOR_UNSPECIFIED:
 							conflict = True
 						hair_color = color
@@ -80,6 +83,8 @@ class Utils:
 						color = tag.split(' ')[0]
 						if color in self.COLOR_EXCLUSION_LIST:
 							continue
+						if color in self.COLOR_ALIAS:
+							color = self.COLOR_ALIAS[color]
 						if eyes_color != self.COLOR_UNSPECIFIED:
 							conflict = True
 						eyes_color = color
@@ -94,6 +99,8 @@ class Utils:
 					self.train_eyes_color_list.append(eyes_color)
 
 		self.color_index_dict = dict([(self.color_list[i], i) for i in range(len(self.color_list))])
+		for key in self.COLOR_ALIAS:
+			self.color_index_dict[key] = self.color_index_dict[self.COLOR_ALIAS[key]]
 		print 'Color List: {}'.format(self.color_list)
 
 	def __readTest(self):
@@ -105,11 +112,15 @@ class Utils:
 				testing_text_id = line.split(',')[0]
 				assert re.match('[a-z]+ hair [a-z]+ eyes', line.split(',')[1])
 				hair_color = line.split(',')[1].split(' ')[0]
+				if hair_color in self.COLOR_ALIAS:
+					hair_color = self.COLOR_ALIAS[hair_color]
 				if hair_color not in self.color_list:
 					hair_color = self.COLOR_UNSPECIFIED
 				eyes_color = line.split(',')[1].split(' ')[2]
 				if eyes_color not in self.color_list:
 					eyes_color = self.COLOR_UNSPECIFIED
+				if eyes_color in self.COLOR_ALIAS:
+					eyes_color = self.COLOR_ALIAS[eyes_color]
 				self.test_list[testing_text_id] = {'hair': hair_color, 'eyes': eyes_color}
 
 	@staticmethod
