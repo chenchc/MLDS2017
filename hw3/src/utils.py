@@ -20,11 +20,17 @@ class Utils:
 	color_index_dict = None
 	test_list = None
 
-	def __init__(self):
+	def __init__(self, test_mode=False):
 		print 'Initializing...'
 		self.__readTags()
-		self.__readImages()
-		assert len(self.train_image_list) == len(self.train_hair_color_list)
+		if not test_mode:
+			self.__readImages()
+			assert len(self.train_image_list) == len(self.train_hair_color_list)
+		else:
+			self.color_list = ['<un>', 'yellow', 'pink', 'purple', 'aqua', 'black', 'blue', 'red', 'green', 'orange', 'white', 'gray', 'brown']
+			self.color_index_dict = dict([(self.color_list[i], i) for i in range(len(self.color_list))])
+			for key in self.COLOR_ALIAS:
+				self.color_index_dict[key] = self.color_index_dict[self.COLOR_ALIAS[key]]
 		self.__readTest()
 
 	def __readImages(self):
@@ -47,7 +53,6 @@ class Utils:
 			if img.shape != self.TRAIN_IMAGE_SHAPE:
 				img = scipy.misc.imresize(img, self.TRAIN_IMAGE_SHAPE, interp='bicubic')
 			self.train_image_list.append(img)
-			self.saveImage('img', str(i), img)
 			i += 1
 
 		file = open(config.IMAGES_CACHED_PATH, 'w')
