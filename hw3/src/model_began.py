@@ -16,11 +16,11 @@ class ModelBEGAN:
 	latent_dim = 64
 	color_emb_dim = 16
 	gamma_init = 0.5
-	gamma_decay = 0.005
-	gamma_min = 0.5
+	gamma_decay = 0.02
+	gamma_min = 0.4
 	lambda_k = 0.001
-	gamma_for_wrong = 1.1
-	lr_init = 0.000025
+	gamma_for_wrong = 1.8
+	lr_init = 1.90734863281e-10 * 2.0
 	lr_decay_rate = 0.5
 	num_sample = 5
 	real_image_threshold = 2.0
@@ -55,15 +55,15 @@ class ModelBEGAN:
 	gen_image_uint8 = None
 	loss_gen_image_batch = None
 
-	def __init__(self):
+	def __init__(self, test_mode=False):
 		if not os.path.exists(self.save_dir):
 			os.makedirs(self.save_dir)
 
-		self.__fillConstants()
+		self.__fillConstants(test_mode)
 		self.__defineModel()
 
-	def __fillConstants(self):
-		self.data = utils.Utils()
+	def __fillConstants(self, test_mode):
+		self.data = utils.Utils(test_mode)
 		self.num_color = len(self.data.color_list)
 		self.color_unspecified_index = self.data.color_index_dict[self.data.COLOR_UNSPECIFIED]
 		self.color_begin = 1
@@ -80,7 +80,7 @@ class ModelBEGAN:
 
 		## Annealing Gamma
 		self.gamma = gamma = tf.get_variable('gamma', shape=[], dtype=tf.float32, initializer=tf.constant_initializer(self.gamma_init), trainable=False)
-		self.update_gamma = tf.assign(gamma, tf.maximum(self.gamma_min, gamma - self.gamma_decay), name='update_gamma')
+		self.update_gamma = tf.assign(gamma, tf.minimum(self.gamma_init, tf.maximum(self.gamma_min, gamma - self.gamma_decay)), name='update_gamma')
 
 		## Input placeholders
 		self.training = training = tf.placeholder(tf.bool, shape=[], name='training')
@@ -95,11 +95,13 @@ class ModelBEGAN:
 				if reuse:
 					scope.reuse_variables()
 				w = tf.get_variable('w', shape=[self.num_color, dim], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
+				'''
 				color_emb = tf.where(
 					tf.equal(color, self.color_unspecified_index),
 					tf.fill([self.batch_size, dim], 0.0),
 					tf.nn.embedding_lookup(w, color, name='color_emb'))
-				#color_emb = tf.nn.embedding_lookup(w, color)
+				'''
+				color_emb = tf.nn.embedding_lookup(w, color)
 				#color_emb = tf.tanh(color_emb)
 			return color_emb
 
@@ -112,6 +114,19 @@ class ModelBEGAN:
 			eyes_color_emb_disc = colorEmb(eyes_color, self.color_emb_dim, 'eyes_color_emb_disc')
 			color_emb_disc = tf.concat([hair_color_emb_disc, eyes_color_emb_disc], -1, name='color_emb_disc')
 
+		## random colors and their embeddings
+		rand_hair_color = tf.random_uniform([self.batch_size], minval=self.color_begin, maxval=self.color_end, dtype=tf.int32)
+		rand_eyes_color = tf.random_uniform([self.batch_size], minval=self.color_begin, maxval=self.color_end, dtype=tf.int32)
+
+		with tf.variable_scope('generator'):
+			rand_hair_color_emb_gen = colorEmb(rand_hair_color, self.color_emb_dim, 'hair_color_emb_gen', reuse=True)
+			rand_eyes_color_emb_gen = colorEmb(rand_eyes_color, self.color_emb_dim, 'eyes_color_emb_gen', reuse=True)
+			rand_color_emb_gen = tf.concat([rand_hair_color_emb_gen, rand_eyes_color_emb_gen], -1, name='rand_color_emb_gen')
+		with tf.variable_scope('discriminator'):
+			rand_hair_color_emb_disc = colorEmb(rand_hair_color, self.color_emb_dim, 'hair_color_emb_disc', reuse=True)
+			rand_eyes_color_emb_disc = colorEmb(rand_eyes_color, self.color_emb_dim, 'eyes_color_emb_disc', reuse=True)
+			rand_color_emb_disc = tf.concat([rand_hair_color_emb_disc, rand_eyes_color_emb_disc], -1, name='rand_color_emb_disc')
+		
 		## Wrong colors and their embeddings
 		wrong_hair_color = tf.where(
 			tf.equal(hair_color, self.color_unspecified_index), 
@@ -130,14 +145,15 @@ class ModelBEGAN:
 		## Generator
 		z = tf.random_uniform([self.batch_size, self.latent_dim], minval=-1.0, maxval=1.0, dtype=tf.float32, name='z')
 		z_for_d = tf.random_uniform([self.batch_size, self.latent_dim], minval=-1.0, maxval=1.0, dtype=tf.float32, name='z_for_d')
-		gen_image = self.__defineGenerator(z, color_emb_gen)
+		gen_image = self.__defineGenerator(z, rand_color_emb_gen)
+		gen_image_for_eval = self.__defineGenerator(z, color_emb_gen, reuse_scope=True)
 		gen_image_for_d = self.__defineGenerator(z_for_d, color_emb_gen, reuse_scope=True)
-		self.gen_image_uint8 = gen_image_uint8 = tf.image.convert_image_dtype(gen_image, tf.uint8, saturate=True, name='gen_image_uint8')
+		self.gen_image_uint8 = gen_image_uint8 = tf.image.convert_image_dtype(gen_image_for_eval, tf.uint8, saturate=True, name='gen_image_uint8')
 		
 		## Discriminator
 		restored_real_image = self.__defineDiscriminator(real_image, color_emb_disc, False)
 		restored_real_image_wrong_cond = self.__defineDiscriminator(real_image, wrong_color_emb_disc, True, reuse_scope=True)
-		restored_gen_image = self.__defineDiscriminator(gen_image, color_emb_disc, False, reuse_scope=True)
+		restored_gen_image = self.__defineDiscriminator(gen_image, rand_color_emb_disc, False, reuse_scope=True)
 		restored_gen_image_for_d = self.__defineDiscriminator(gen_image_for_d, color_emb_disc, False, reuse_scope=True)
 		
 		## Define reconstruction loss
@@ -178,7 +194,7 @@ class ModelBEGAN:
 		self.loss_real_image_wrong_cond = loss_real_image_wrong_cond = tf.reduce_mean(loss_real_image_wrong_cond_batch, name='loss_real_image_wrong_cond')
 
 		#loss_cond = tf.reduce_mean(tf.maximum(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch, 0.0))
-		loss_cond = tf.reduce_mean(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch)
+		loss_cond = tf.reduce_mean(tf.abs(self.gamma_for_wrong * loss_real_image_batch - loss_real_image_wrong_cond_batch))
 
 		self.oob_loss_gen_image = oob_loss_gen_image = outOfBoundLoss(gen_image, 'oob_loss_gen_image')
 		self.loss_gen_image = loss_gen_image = reconLoss(gen_image, restored_gen_image, 'gen_image')
@@ -468,6 +484,25 @@ class ModelBEGAN:
 		gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
 		self.data.saveImageTile('training', 'tile_wy', gen_image)
 
+	def test(self, savepoint):
+		gc.disable()
+		with tf.Session() as sess:
+			saver = tf.train.Saver(allow_empty=True)
+			if savepoint != None:
+				saver.restore(sess, savepoint)
+			
+			for testing_text_id in self.data.test_list:
+				feed_dict = {
+					self.training: False,
+					self.hair_color: np.full([self.batch_size], self.data.color_index_dict[self.data.test_list[testing_text_id]['hair']], dtype=np.int32),
+					self.eyes_color: np.full([self.batch_size], self.data.color_index_dict[self.data.test_list[testing_text_id]['eyes']], dtype=np.int32)
+					}
+				for i in range(self.num_sample):
+					gen_image, loss = sess.run([self.gen_image_uint8, self.loss_gen_image_batch], feed_dict=feed_dict)
+					index = np.argmin(loss)
+					self.data.saveImage(testing_text_id, str(i), gen_image[index])
+				
+
 	def train(self, savepoint=None):
 		print 'Start training...'
 
@@ -483,6 +518,7 @@ class ModelBEGAN:
 			if savepoint != None:
 				saver.restore(sess, savepoint)
 
+			## Update gamma
 			gamma = sess.run([self.update_gamma])
 			print 'Gamma change to: {}'.format(gamma)
 
@@ -490,7 +526,7 @@ class ModelBEGAN:
 			last_convergence_measure = 1.0
 			lr = self.lr_init
 			last_checkpoint = None
-			for epoch in range(16, 1000, 1):
+			for epoch in range(90, 1000, 1):
 				print '[Epoch #{}]'.format(str(epoch))
 
 				train_pair_list = self.__prepareTrainPairList()
@@ -559,6 +595,7 @@ class ModelBEGAN:
 			
 		
 if __name__ == '__main__':
-	model = ModelBEGAN()
-	model.train('data/model_began/model.ckpt-15')
+	model = ModelBEGAN(test_mode=True)
+	#model.train('data/model_began/model.ckpt-89')
 	#model.train()
+	model.test('data/model_began/model.ckpt-136')
