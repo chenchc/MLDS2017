@@ -10,5 +10,5 @@ if [[ $1 == 'S2S' ]]; then
 else
 	python src/model_rl.py
 fi
-cp test_output.txt $3
+cp output.txt $3
 
